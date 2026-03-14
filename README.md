@@ -1,0 +1,48 @@
+# Claude Code Statusline
+
+A fast, dependency-free Go binary that renders a rich statusline for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Reimplemented from the original bash script by [jezweb/claude-skills](https://github.com/jezweb/claude-skills).
+
+## Why?
+
+The original bash implementation spawns ~10 sequential git subprocesses and ~15 jq invocations per render. This Go rewrite:
+
+- **Single JSON parse** instead of many jq calls
+- **3 parallel git calls** with 500ms timeout
+- **Locale-independent** cost formatting (no `printf "%.2f"` locale bugs)
+- **Zero dependencies** — stdlib only
+
+## Build
+
+```sh
+go build -o claude-statusline
+```
+
+## Usage
+
+Configure in Claude Code settings (`.claude/settings.json`):
+
+```json
+{
+  "statusline": {
+    "command": "/path/to/claude-statusline"
+  }
+}
+```
+
+## Output
+
+Up to three lines, grouped by concern:
+
+```
+[Opus 4.6 (1M context):conc] | @agent
+my-repo:main *↑2↓1 | [abc1234] Last commit message | wt
+[■■■□□□□□□□□□□□□□□□□□□□□□□□□□□□] 10% | 900k free | +42/-10 | 1h 30m | $4.50
+```
+
+- **Line 1** (session): Model, output style, agent
+- **Line 2** (git): Repo, branch, dirty/ahead/behind, commit hash + message, worktree — skipped outside git repos
+- **Line 3** (metrics): Context bar (30 bricks), percentage (with `!` warning above 200k tokens), free tokens, lines changed, duration, cost
+
+## License
+
+MIT — see [LICENSE](LICENSE) for details.
