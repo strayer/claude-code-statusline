@@ -96,7 +96,7 @@ func main() {
 	}
 
 	gitInfo := collectGitInfo(input.Workspace.CurrentDir)
-	renderOutput(input, gitInfo)
+	renderOutput(os.Stdout, input, gitInfo)
 }
 
 func collectGitInfo(dir string) GitInfo {
@@ -158,10 +158,7 @@ func collectGitInfo(dir string) GitInfo {
 		if err != nil {
 			return
 		}
-		msg := strings.TrimSpace(out)
-		if len(msg) > 50 {
-			msg = msg[:50]
-		}
+		msg := truncateCommitMessage(strings.TrimSpace(out))
 		mu.Lock()
 		info.CommitMessage = msg
 		mu.Unlock()
@@ -189,10 +186,12 @@ func parseGitStatus(output string) (branch, shortHash, ahead, behind string, dir
 			branch = strings.TrimPrefix(line, "# branch.head ")
 		} else if strings.HasPrefix(line, "# branch.oid ") {
 			oid := strings.TrimPrefix(line, "# branch.oid ")
-			if len(oid) >= 7 {
-				shortHash = oid[:7]
-			} else {
-				shortHash = oid
+			if isHexString(oid) {
+				if len(oid) >= 7 {
+					shortHash = oid[:7]
+				} else {
+					shortHash = oid
+				}
 			}
 		} else if strings.HasPrefix(line, "# branch.ab ") {
 			parts := strings.Fields(line)
@@ -211,8 +210,27 @@ func parseGitStatus(output string) (branch, shortHash, ahead, behind string, dir
 	return
 }
 
-func renderOutput(input Input, git GitInfo) {
-	w := os.Stdout
+func truncateCommitMessage(msg string) string {
+	const maxRunes = 50
+	if runes := []rune(msg); len(runes) > maxRunes {
+		return string(runes[:maxRunes])
+	}
+	return msg
+}
+
+func isHexString(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func renderOutput(w io.Writer, input Input, git GitInfo) {
 
 	// ── Line 1: [Model:style] | @agent ──
 	model := strings.TrimPrefix(input.Model.DisplayName, "Claude ")
@@ -229,10 +247,15 @@ func renderOutput(input Input, git GitInfo) {
 	fmt.Fprintln(w)
 
 	// ── Line 2: repo:branch status | [hash] message | wt ──
-	if git.RepoName != "" {
-		fmt.Fprint(w, green+git.RepoName+reset)
+	if git.RepoName != "" || git.Branch != "" {
+		if git.RepoName != "" {
+			fmt.Fprint(w, green+git.RepoName+reset)
+		}
 		if git.Branch != "" {
-			fmt.Fprintf(w, ":"+blue+"%s"+reset, git.Branch)
+			if git.RepoName != "" {
+				fmt.Fprint(w, ":")
+			}
+			fmt.Fprintf(w, blue+"%s"+reset, git.Branch)
 		}
 
 		gitStatus := ""
@@ -271,7 +294,9 @@ func renderOutput(input Input, git GitInfo) {
 
 	const totalBricks = 30
 	filledBricks := int(usagePct / 100.0 * float64(totalBricks))
-	if filledBricks > totalBricks {
+	if filledBricks < 0 {
+		filledBricks = 0
+	} else if filledBricks > totalBricks {
 		filledBricks = totalBricks
 	}
 
@@ -292,8 +317,16 @@ func renderOutput(input Input, git GitInfo) {
 		fmt.Fprintf(w, " | "+greenDim+"+%d"+reset+"/"+redDim+"-%d"+reset, input.Cost.TotalLinesAdded, input.Cost.TotalLinesRemoved)
 	}
 
-	d := time.Duration(input.Cost.TotalDurationMS) * time.Millisecond
-	fmt.Fprintf(w, " | %dh %dm", int(d.Hours()), int(d.Minutes())%60)
+	if input.Cost.TotalDurationMS > 0 {
+		d := time.Duration(input.Cost.TotalDurationMS) * time.Millisecond
+		h := int(d.Hours())
+		m := int(d.Minutes()) % 60
+		if h > 0 {
+			fmt.Fprintf(w, " | %dh %dm", h, m)
+		} else {
+			fmt.Fprintf(w, " | %dm", m)
+		}
+	}
 
 	if input.Cost.TotalCostUSD > 0 {
 		fmt.Fprintf(w, " | "+yellowDim+"$%.2f"+reset, input.Cost.TotalCostUSD)
@@ -311,6 +344,9 @@ func abbreviateStyle(name string) string {
 	case "verbose":
 		return "verb"
 	default:
-		return ""
+		if runes := []rune(name); len(runes) > 4 {
+			return string(runes[:4])
+		}
+		return name
 	}
 }
