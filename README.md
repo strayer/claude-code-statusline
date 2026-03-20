@@ -14,7 +14,7 @@ The original bash implementation spawns ~10 sequential git subprocesses and ~15 
 ## Build
 
 ```sh
-go build -o claude-statusline
+CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o claude-statusline
 ```
 
 ## Usage
