@@ -11,20 +11,29 @@ The original bash implementation spawns ~10 sequential git subprocesses and ~15 
 - **Locale-independent** cost formatting (no `printf "%.2f"` locale bugs)
 - **Zero dependencies** — stdlib only
 
-## Build
+## Installation
+
+Download the latest release:
+
+```sh
+curl -L https://github.com/strayer/claude-code-statusline/releases/latest/download/claude-statusline -o ~/.claude/claude-statusline && chmod +x ~/.claude/claude-statusline
+```
+
+Or build from source (requires Go):
 
 ```sh
 CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o claude-statusline
+cp claude-statusline ~/.claude/claude-statusline
 ```
 
-## Usage
-
-Configure in Claude Code settings (`.claude/settings.json`):
+Then configure in `~/.claude/settings.json`:
 
 ```json
 {
-  "statusline": {
-    "command": "/path/to/claude-statusline"
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/claude-statusline",
+    "padding": 0
   }
 }
 ```
