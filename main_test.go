@@ -125,28 +125,6 @@ u UU N... 100644 100644 100644 100644 abc123 def456 ghi789 file.go`,
 	}
 }
 
-func TestAbbreviateStyle(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"explanatory", "expl"},
-		{"concise", "conc"},
-		{"verbose", "verb"},
-		{"", ""},
-		{"unknown", "unkn"},
-		{"new", "new"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := abbreviateStyle(tt.input)
-			if got != tt.want {
-				t.Errorf("abbreviateStyle(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}
 
 func defaultInput() Input {
 	return Input{
@@ -173,8 +151,21 @@ func TestRenderOutput(t *testing.T) {
 		in.ContextWindow.RemainingPercentage = 50
 		out := render(in, GitInfo{})
 
-		if !strings.Contains(out, "Sonnet 4:conc") {
+		if !strings.Contains(out, "Sonnet 4:concise") {
 			t.Errorf("expected model:style in output, got: %q", out)
+		}
+	})
+
+	t.Run("default style omitted from model line", func(t *testing.T) {
+		in := defaultInput()
+		in.OutputStyle = OutputStyle{Name: "default"}
+		out := render(in, GitInfo{})
+
+		if strings.Contains(out, ":default") {
+			t.Errorf("default style should not appear in output, got: %q", out)
+		}
+		if !strings.Contains(out, "[Sonnet 4]") {
+			t.Errorf("expected model without style suffix, got: %q", out)
 		}
 	})
 
@@ -344,11 +335,11 @@ func TestTruncateCommitMessage(t *testing.T) {
 		want  string
 	}{
 		{"short message unchanged", "hello", "hello"},
-		{"exact 50 runes unchanged", strings.Repeat("a", 50), strings.Repeat("a", 50)},
-		{"long ascii truncated to 50", strings.Repeat("a", 55), strings.Repeat("a", 50)},
-		{"emoji preserved at boundary", strings.Repeat("a", 49) + "🎉", strings.Repeat("a", 49) + "🎉"},
-		{"emoji not split", strings.Repeat("a", 50) + "🎉", strings.Repeat("a", 50)},
-		{"multi-byte truncation preserves valid utf8", strings.Repeat("a", 48) + "🎉🎉🎉", strings.Repeat("a", 48) + "🎉🎉"},
+		{"exact 70 runes unchanged", strings.Repeat("a", 70), strings.Repeat("a", 70)},
+		{"long ascii truncated to 70 with ellipsis", strings.Repeat("a", 75), strings.Repeat("a", 70) + "…"},
+		{"emoji preserved at boundary", strings.Repeat("a", 69) + "🎉", strings.Repeat("a", 69) + "🎉"},
+		{"emoji not split", strings.Repeat("a", 70) + "🎉", strings.Repeat("a", 70) + "…"},
+		{"multi-byte truncation preserves valid utf8", strings.Repeat("a", 68) + "🎉🎉🎉", strings.Repeat("a", 68) + "🎉🎉" + "…"},
 	}
 
 	for _, tt := range tests {

@@ -211,9 +211,9 @@ func parseGitStatus(output string) (branch, shortHash, ahead, behind string, dir
 }
 
 func truncateCommitMessage(msg string) string {
-	const maxRunes = 50
+	const maxRunes = 70
 	if runes := []rune(msg); len(runes) > maxRunes {
-		return string(runes[:maxRunes])
+		return string(runes[:maxRunes]) + "…"
 	}
 	return msg
 }
@@ -234,8 +234,8 @@ func renderOutput(w io.Writer, input Input, git GitInfo) {
 
 	// ── Line 1: [Model:style] | @agent ──
 	model := strings.TrimPrefix(input.Model.DisplayName, "Claude ")
-	if style := abbreviateStyle(input.OutputStyle.Name); style != "" {
-		fmt.Fprintf(w, cyan+"[%s:%s]"+reset, model, style)
+	if input.OutputStyle.Name != "" && input.OutputStyle.Name != "default" {
+		fmt.Fprintf(w, cyan+"[%s:%s]"+reset, model, input.OutputStyle.Name)
 	} else {
 		fmt.Fprintf(w, cyan+"[%s]"+reset, model)
 	}
@@ -335,18 +335,3 @@ func renderOutput(w io.Writer, input Input, git GitInfo) {
 	fmt.Fprintln(w)
 }
 
-func abbreviateStyle(name string) string {
-	switch name {
-	case "explanatory":
-		return "expl"
-	case "concise":
-		return "conc"
-	case "verbose":
-		return "verb"
-	default:
-		if runes := []rune(name); len(runes) > 4 {
-			return string(runes[:4])
-		}
-		return name
-	}
-}
