@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseGitStatus(t *testing.T) {
@@ -136,9 +137,11 @@ func defaultInput() Input {
 	}
 }
 
+var testNow = time.Unix(1738400000, 0)
+
 func render(input Input, git GitInfo) string {
 	var buf bytes.Buffer
-	renderOutput(&buf, input, git)
+	renderOutput(&buf, input, git, testNow, "/home/user")
 	return buf.String()
 }
 
@@ -323,6 +326,180 @@ func TestRenderOutput(t *testing.T) {
 
 		if !strings.Contains(out, "Sonnet 4") {
 			t.Errorf("expected model in output, got: %q", out)
+		}
+	})
+}
+
+func TestRateLimits(t *testing.T) {
+	t.Run("rate limits shown when present", func(t *testing.T) {
+		in := defaultInput()
+		in.RateLimits = &RateLimits{
+			FiveHour: &RateWindow{UsedPercentage: 23.5, ResetsAt: testNow.Unix() + 3600},
+			SevenDay: &RateWindow{UsedPercentage: 41.2, ResetsAt: testNow.Unix() + 86400},
+		}
+		out := render(in, GitInfo{})
+
+		if !strings.Contains(out, "5h:") {
+			t.Errorf("expected 5h label, got: %q", out)
+		}
+		if !strings.Contains(out, "76%") { // 100 - 23.5 truncated
+			t.Errorf("expected 77%% remaining for 5h, got: %q", out)
+		}
+		if !strings.Contains(out, "7d:") {
+			t.Errorf("expected 7d label, got: %q", out)
+		}
+		if !strings.Contains(out, "59%") { // 100 - 41.2 rounded
+			t.Errorf("expected 59%% remaining for 7d, got: %q", out)
+		}
+	})
+
+	t.Run("rate limits hide cost", func(t *testing.T) {
+		in := defaultInput()
+		in.Cost.TotalCostUSD = 1.50
+		in.RateLimits = &RateLimits{
+			FiveHour: &RateWindow{UsedPercentage: 10, ResetsAt: testNow.Unix() + 3600},
+		}
+		out := render(in, GitInfo{})
+
+		if strings.Contains(out, "$1.50") {
+			t.Errorf("cost should be hidden when rate_limits present, got: %q", out)
+		}
+	})
+
+	t.Run("cost shown without rate limits", func(t *testing.T) {
+		in := defaultInput()
+		in.Cost.TotalCostUSD = 1.50
+		out := render(in, GitInfo{})
+
+		if !strings.Contains(out, "$1.50") {
+			t.Errorf("expected cost shown without rate_limits, got: %q", out)
+		}
+	})
+
+	t.Run("reset time shown in hours", func(t *testing.T) {
+		in := defaultInput()
+		in.RateLimits = &RateLimits{
+			FiveHour: &RateWindow{UsedPercentage: 50, ResetsAt: testNow.Unix() + 7200}, // 2h
+		}
+		out := render(in, GitInfo{})
+
+		if !strings.Contains(out, "(2h)") {
+			t.Errorf("expected (2h) reset time, got: %q", out)
+		}
+	})
+
+	t.Run("reset time shown in minutes", func(t *testing.T) {
+		in := defaultInput()
+		in.RateLimits = &RateLimits{
+			FiveHour: &RateWindow{UsedPercentage: 50, ResetsAt: testNow.Unix() + 1800}, // 30m
+		}
+		out := render(in, GitInfo{})
+
+		if !strings.Contains(out, "(30m)") {
+			t.Errorf("expected (30m) reset time, got: %q", out)
+		}
+	})
+
+	t.Run("reset time shown in days", func(t *testing.T) {
+		in := defaultInput()
+		in.RateLimits = &RateLimits{
+			SevenDay: &RateWindow{UsedPercentage: 20, ResetsAt: testNow.Unix() + 3*86400}, // 3d
+		}
+		out := render(in, GitInfo{})
+
+		if !strings.Contains(out, "(3d)") {
+			t.Errorf("expected (3d) reset time, got: %q", out)
+		}
+	})
+
+	t.Run("low remaining shows red", func(t *testing.T) {
+		in := defaultInput()
+		in.RateLimits = &RateLimits{
+			FiveHour: &RateWindow{UsedPercentage: 95, ResetsAt: testNow.Unix() + 600},
+		}
+		out := render(in, GitInfo{})
+
+		if !strings.Contains(out, red) {
+			t.Errorf("expected red color for low remaining, got: %q", out)
+		}
+	})
+
+	t.Run("only five_hour present", func(t *testing.T) {
+		in := defaultInput()
+		in.RateLimits = &RateLimits{
+			FiveHour: &RateWindow{UsedPercentage: 30, ResetsAt: testNow.Unix() + 3600},
+		}
+		out := render(in, GitInfo{})
+
+		if !strings.Contains(out, "5h:") {
+			t.Errorf("expected 5h label, got: %q", out)
+		}
+		if strings.Contains(out, "7d:") {
+			t.Errorf("7d should not appear when absent, got: %q", out)
+		}
+	})
+}
+
+func TestShortenPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		dir     string
+		homeDir string
+		want    string
+	}{
+		{"home replaced with tilde", "/home/user/projects/foo", "/home/user", "~/projects/foo"},
+		{"exact home dir", "/home/user", "/home/user", "~"},
+		{"no home match", "/opt/app/src", "/home/user", "/opt/app/src"},
+		{"empty home dir", "/some/path", "", "/some/path"},
+		{"long path truncated at slash", "/home/user/" + strings.Repeat("a", 20) + "/" + strings.Repeat("b", 20) + "/" + strings.Repeat("c", 20), "/home/user", "…/" + strings.Repeat("b", 20) + "/" + strings.Repeat("c", 20)},
+		{"home prefix not partial match", "/home/username/foo", "/home/user", "/home/username/foo"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shortenPath(tt.dir, tt.homeDir)
+			if got != tt.want {
+				t.Errorf("shortenPath(%q, %q) = %q, want %q", tt.dir, tt.homeDir, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRenderDir(t *testing.T) {
+	t.Run("directory shown on line 1", func(t *testing.T) {
+		in := defaultInput()
+		in.Workspace.CurrentDir = "/home/user/projects/myapp"
+		out := render(in, GitInfo{})
+
+		if !strings.Contains(out, "~/projects/myapp") {
+			t.Errorf("expected ~/projects/myapp in output, got: %q", out)
+		}
+	})
+
+	t.Run("agent before dir", func(t *testing.T) {
+		in := defaultInput()
+		in.Workspace.CurrentDir = "/home/user/projects/myapp"
+		in.Agent = AgentInfo{Name: "test"}
+		out := render(in, GitInfo{})
+
+		line1 := strings.Split(out, "\n")[0]
+		agentIdx := strings.Index(line1, "@test")
+		dirIdx := strings.Index(line1, "~/projects/myapp")
+		if agentIdx < 0 || dirIdx < 0 || agentIdx > dirIdx {
+			t.Errorf("expected agent before dir on line 1, got: %q", line1)
+		}
+	})
+
+	t.Run("no dir when empty", func(t *testing.T) {
+		in := defaultInput()
+		in.Workspace.CurrentDir = ""
+		out := render(in, GitInfo{})
+
+		line1 := strings.Split(out, "\n")[0]
+		// Should just be the model tag with no trailing pipe
+		pipeCount := strings.Count(line1, "|")
+		if pipeCount != 0 {
+			t.Errorf("expected no pipes without dir or agent, got: %q", line1)
 		}
 	})
 }

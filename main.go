@@ -23,7 +23,18 @@ type Input struct {
 	ContextWindow ContextWindow `json:"context_window"`
 	OutputStyle   OutputStyle   `json:"output_style"`
 	Agent         AgentInfo     `json:"agent"`
+	RateLimits    *RateLimits   `json:"rate_limits"`
 	Exceeds200k   bool          `json:"exceeds_200k_tokens"`
+}
+
+type RateLimits struct {
+	FiveHour *RateWindow `json:"five_hour"`
+	SevenDay *RateWindow `json:"seven_day"`
+}
+
+type RateWindow struct {
+	UsedPercentage float64 `json:"used_percentage"`
+	ResetsAt       int64   `json:"resets_at"`
 }
 
 type ModelInfo struct {
@@ -95,8 +106,9 @@ func main() {
 		return
 	}
 
+	homeDir, _ := os.UserHomeDir()
 	gitInfo := collectGitInfo(input.Workspace.CurrentDir)
-	renderOutput(os.Stdout, input, gitInfo)
+	renderOutput(os.Stdout, input, gitInfo, time.Now(), homeDir)
 }
 
 func collectGitInfo(dir string) GitInfo {
@@ -230,9 +242,34 @@ func isHexString(s string) bool {
 	return true
 }
 
-func renderOutput(w io.Writer, input Input, git GitInfo) {
+func shortenPath(dir, homeDir string) string {
+	// Normalize to forward slashes for display (Windows compat)
+	dir = filepath.ToSlash(dir)
+	homeDir = filepath.ToSlash(homeDir)
 
-	// ── Line 1: [Model:style] | @agent ──
+	// Replace home directory prefix with ~
+	if homeDir != "" && (dir == homeDir || strings.HasPrefix(dir, homeDir+"/")) {
+		dir = "~" + dir[len(homeDir):]
+	}
+
+	// Truncate from the left if too long
+	const maxLen = 50
+	if len(dir) > maxLen {
+		// Find a slash boundary to cut at
+		cut := dir[len(dir)-maxLen:]
+		if i := strings.Index(cut, "/"); i >= 0 {
+			dir = "…" + cut[i:]
+		} else {
+			dir = "…" + cut
+		}
+	}
+
+	return dir
+}
+
+func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir string) {
+
+	// ── Line 1: [Model:style] | @agent | dir ──
 	model := strings.TrimPrefix(input.Model.DisplayName, "Claude ")
 	if input.OutputStyle.Name != "" && input.OutputStyle.Name != "default" {
 		fmt.Fprintf(w, cyan+"[%s:%s]"+reset, model, input.OutputStyle.Name)
@@ -242,6 +279,10 @@ func renderOutput(w io.Writer, input Input, git GitInfo) {
 
 	if input.Agent.Name != "" {
 		fmt.Fprintf(w, " | "+magenta+"@%s"+reset, input.Agent.Name)
+	}
+
+	if dir := input.Workspace.CurrentDir; dir != "" {
+		fmt.Fprintf(w, " | %s", shortenPath(dir, homeDir))
 	}
 
 	fmt.Fprintln(w)
@@ -328,9 +369,57 @@ func renderOutput(w io.Writer, input Input, git GitInfo) {
 		}
 	}
 
-	if input.Cost.TotalCostUSD > 0 {
+	if input.RateLimits != nil {
+		renderRateLimits(w, input.RateLimits, now)
+	} else if input.Cost.TotalCostUSD > 0 {
 		fmt.Fprintf(w, " | "+yellowDim+"$%.2f"+reset, input.Cost.TotalCostUSD)
 	}
 
 	fmt.Fprintln(w)
+}
+
+func renderRateLimits(w io.Writer, rl *RateLimits, now time.Time) {
+	if rl.FiveHour != nil {
+		fmt.Fprintf(w, " | 5h: %s", formatRateWindow(rl.FiveHour, now))
+	}
+	if rl.SevenDay != nil {
+		fmt.Fprintf(w, " | 7d: %s", formatRateWindow(rl.SevenDay, now))
+	}
+}
+
+func formatRateWindow(rw *RateWindow, now time.Time) string {
+	remaining := 100 - rw.UsedPercentage
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	var color string
+	switch {
+	case remaining <= 10:
+		color = red
+	case remaining <= 30:
+		color = yellow
+	default:
+		color = green
+	}
+
+	s := fmt.Sprintf("%s%.0f%%%s", color, remaining, reset)
+
+	if rw.ResetsAt > 0 {
+		mins := int(rw.ResetsAt - now.Unix())
+		if mins < 0 {
+			mins = 0
+		}
+		mins /= 60
+		switch {
+		case mins >= 1440:
+			s += fmt.Sprintf(" %s(%dd)%s", dim, mins/1440, reset)
+		case mins >= 60:
+			s += fmt.Sprintf(" %s(%dh)%s", dim, mins/60, reset)
+		default:
+			s += fmt.Sprintf(" %s(%dm)%s", dim, mins, reset)
+		}
+	}
+
+	return s
 }
