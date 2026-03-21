@@ -125,7 +125,6 @@ u UU N... 100644 100644 100644 100644 abc123 def456 ghi789 file.go`,
 	}
 }
 
-
 func defaultInput() Input {
 	return Input{
 		Model: ModelInfo{DisplayName: "Claude Sonnet 4"},

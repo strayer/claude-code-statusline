@@ -334,4 +334,3 @@ func renderOutput(w io.Writer, input Input, git GitInfo) {
 
 	fmt.Fprintln(w)
 }
-
