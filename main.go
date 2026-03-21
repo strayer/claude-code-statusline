@@ -327,23 +327,40 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir 
 		fmt.Fprintln(w)
 	}
 
-	// ── Line 3: [bricks] pct% | Nk free | +N/-N | Xh Ym | $cost ──
+	// ── Line 3: [braille bar] pct% | Nk free | +N/-N | Xh Ym | $cost ──
 	usagePct := input.ContextWindow.UsedPercentage
 	remainPct := input.ContextWindow.RemainingPercentage
 	totalTokens := input.ContextWindow.ContextWindowSize
 	freeK := float64(totalTokens) * remainPct / 100.0 / 1000.0
 
-	const totalBricks = 30
-	filledBricks := int(usagePct / 100.0 * float64(totalBricks))
-	if filledBricks < 0 {
-		filledBricks = 0
-	} else if filledBricks > totalBricks {
-		filledBricks = totalBricks
+	const unitsPerChar = 4
+	const barChars = 15
+	const totalUnits = barChars * unitsPerChar // 60
+	filledUnits := int(usagePct / 100.0 * float64(totalUnits))
+	if filledUnits < 0 {
+		filledUnits = 0
+	} else if filledUnits > totalUnits {
+		filledUnits = totalUnits
 	}
 
+	fullChars := filledUnits / unitsPerChar
+	partialLevel := filledUnits % unitsPerChar
+	emptyChars := barChars - fullChars
+	if partialLevel > 0 {
+		emptyChars--
+	}
+
+	// Braille characters filling bottom to top (both columns)
+	braillePartial := [5]rune{'⠀', '⣀', '⣤', '⣶', '⣿'}
+
 	fmt.Fprint(w, "[")
-	fmt.Fprint(w, cyanDim+strings.Repeat("■", filledBricks)+reset)
-	fmt.Fprint(w, dim+strings.Repeat("□", totalBricks-filledBricks)+reset)
+	fmt.Fprint(w, cyanDim+strings.Repeat("⣿", fullChars))
+	if partialLevel > 0 {
+		fmt.Fprintf(w, "%c"+reset, braillePartial[partialLevel])
+	} else {
+		fmt.Fprint(w, reset)
+	}
+	fmt.Fprint(w, dim+strings.Repeat("⠀", emptyChars)+reset)
 	fmt.Fprint(w, "] ")
 
 	if input.Exceeds200k {
