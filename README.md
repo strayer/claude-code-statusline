@@ -33,15 +33,25 @@ Configure in Claude Code settings (`.claude/settings.json`):
 
 Up to three lines, grouped by concern:
 
+API usage:
+
 ```
-[Opus 4.6 (1M context):conc] | @agent
-my-repo:main *↑2↓1 | [abc1234] Last commit message | wt
+[Opus 4.6:concise] | ~/dev/my-project
+my-repo:main *↑2↓1 | [abc1234] Last commit message
 [■■■□□□□□□□□□□□□□□□□□□□□□□□□□□□] 10% | 900k free | +42/-10 | 1h 30m | $4.50
 ```
 
-- **Line 1** (session): Model, output style, agent
+Subscriber (Claude.ai Pro/Max):
+
+```
+[Opus 4.6] | @agent | ~/dev/my-project
+my-repo:feature-branch | [def5678] Add new feature
+[■■■■■■■■■□□□□□□□□□□□□□□□□□□□□□] 30% | 140k free | +200/-50 | 45m | 5h: 80% (3h) | 7d: 55% (4d)
+```
+
+- **Line 1** (session): Model, output style, agent, working directory (`~` for home, left-truncated when long)
 - **Line 2** (git): Repo, branch, dirty/ahead/behind, commit hash + message, worktree — skipped outside git repos
-- **Line 3** (metrics): Context bar (30 bricks), percentage (with `!` warning above 200k tokens), free tokens, lines changed, duration, cost
+- **Line 3** (metrics): Context bar (30 bricks), percentage (with `!` warning above 200k tokens), free tokens, lines changed, duration, cost (API) or rate limits with reset countdown (subscribers)
 
 ## License
 
