@@ -181,7 +181,10 @@ func collectGitInfo(dir string) GitInfo {
 }
 
 func gitCmd(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	// Use --no-optional-locks to avoid creating .git/index.lock, which would
+	// conflict with concurrent git operations by Claude Code or editors.
+	fullArgs := append([]string{"--no-optional-locks"}, args...)
+	cmd := exec.CommandContext(ctx, "git", fullArgs...)
 	cmd.Dir = dir
 	var out bytes.Buffer
 	cmd.Stdout = &out
