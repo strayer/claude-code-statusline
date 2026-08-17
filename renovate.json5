@@ -39,6 +39,18 @@
         "/golang\\.org/x/tools/cmd/goimports$/",
         "/golang\\.org/x/vuln/cmd/govulncheck$/"
       ]
+    },
+    {
+      // the Go toolchain is pinned in both mise.toml and go.mod — update
+      // together so the go-version-sync CI check keeps passing
+      "groupName": "Go",
+      "matchDepNames": ["go", "golang"]
+    },
+    {
+      // without this the gomod manager never bumps the go directive
+      "matchManagers": ["gomod"],
+      "matchDepNames": ["go"],
+      "rangeStrategy": "bump"
     }
   ]
 }
