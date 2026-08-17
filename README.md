@@ -63,17 +63,25 @@ Up to three lines, grouped by concern:
 API usage:
 
 ```
-[Opus 4.6:concise] | ~/dev/my-project
-my-repo:main *↑2↓1 | [abc1234] Last commit message
+[Opus 4.6:concise:high] | ~/dev/my-project
+my-repo:main *↑2↓1 | PR#13 ✓ | [abc1234] Last commit message
 [⣿⣿⣤⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀] 10% | 900k free | +42/-10 | 1h 30m | $4.50
 ```
 
-Subscriber (Claude.ai Pro/Max):
+Subscriber (Claude.ai Pro/Max), with [fast mode](https://code.claude.com/docs/en/fast-mode) on:
 
 ```
-[Opus 4.6] | @agent | ~/dev/my-project
-my-repo:feature-branch | [def5678] Add new feature
+[Opus 4.6:xhigh] | fast | @agent | ~/dev/my-project
+my-repo:feature-branch | PR#14 | [def5678] Add new feature
 [⣿⣿⣿⣿⣤⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀] 30% | 140k free | +200/-50 | 45m | 5h: 80% (3h) | 7d: 55% (4d)
+```
+
+In a git worktree, on a GitLab remote:
+
+```
+[Opus 4.6:high] | ~/dev/my-project
+my-repo:feature-xyz * | MR!42 draft | [def5678] Add new feature | wt:feature-xyz
+[⣿⣿⣤⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀] 10% | 900k free | 12m | $0.80
 ```
 
 In Docker Sandbox ([sbx](https://docs.docker.com/ai/sandboxes/)):
@@ -84,9 +92,32 @@ my-repo:main | [abc1234] Last commit message
 [⣿⣿⣤⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀] 10% | 900k free | +42/-10 | 1h 30m | 5h: 80% (3h) | 7d: 55% (4d)
 ```
 
-- **Line 1** (session): Sandbox indicator (`sbx[vm-id]` when running inside an agent sandbox, detected via `SANDBOX_VM_ID`/`IS_SANDBOX`), model, output style, agent, working directory (`~` for home, left-truncated when long)
-- **Line 2** (git): Repo, branch, dirty/ahead/behind, commit hash + message, worktree — skipped outside git repos
+- **Line 1** (session): Sandbox indicator (`sbx[vm-id]` when running inside an agent sandbox, detected via `SANDBOX_VM_ID`/`IS_SANDBOX`), model, output style, reasoning effort, fast mode, agent, working directory (`~` for home, left-truncated when long)
+- **Line 2** (git): Repo, branch, dirty/ahead/behind, pull request, commit hash + message, worktree — skipped outside git repos
 - **Line 3** (metrics): Context bar, percentage (with `!` warning above 200k tokens), free tokens, lines changed, duration, cost (API) or rate limits with reset countdown (subscribers)
+
+### Model chip
+
+The bracketed chip reads `[model:style:effort]`. The output style is omitted when it is `default`, and the [reasoning effort](https://code.claude.com/docs/en/statusline#available-data) (`low`, `medium`, `high`, `xhigh`, `max`) is omitted for models without an effort parameter — so a plain session shows just `[Opus 4.6]`. Effort tracks mid-session `/effort` changes; ultracode reports as `xhigh`.
+
+A yellow `fast` marker follows the chip while fast mode is enabled.
+
+### Pull requests
+
+When Claude Code finds an open pull request for the current branch, it appears after the branch status, colored by review state:
+
+| Shown | Review state |
+| --- | --- |
+| `PR#13 ✓` (green) | `approved` |
+| `PR#13 ✗` (red) | `changes_requested` |
+| `PR#13 draft` (dim) | `draft` |
+| `PR#13` (blue) | `pending`, or no review state reported |
+
+On a GitLab remote the same segment describes the branch's open [merge request](https://code.claude.com/docs/en/interactive-mode#gitlab-merge-requests) and uses GitLab's `MR!42` notation.
+
+### Worktrees
+
+Inside a linked git worktree the line ends with `wt:<name>`, using the worktree name reported by Claude Code. Older versions that do not report it fall back to a bare `wt`, detected from the git directory.
 
 ## Releasing
 

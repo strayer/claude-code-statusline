@@ -24,8 +24,11 @@ type Input struct {
 	ContextWindow ContextWindow `json:"context_window"`
 	OutputStyle   OutputStyle   `json:"output_style"`
 	Agent         AgentInfo     `json:"agent"`
+	Effort        EffortInfo    `json:"effort"`
+	PR            *PRInfo       `json:"pr"`
 	RateLimits    *RateLimits   `json:"rate_limits"`
 	Exceeds200k   bool          `json:"exceeds_200k_tokens"`
+	FastMode      bool          `json:"fast_mode"`
 }
 
 type RateLimits struct {
@@ -44,6 +47,8 @@ type ModelInfo struct {
 
 type WorkspaceInfo struct {
 	CurrentDir string `json:"current_dir"`
+	// GitWorktree is the worktree name, absent in the main working tree.
+	GitWorktree string `json:"git_worktree"`
 }
 
 type CostInfo struct {
@@ -65,6 +70,20 @@ type OutputStyle struct {
 
 type AgentInfo struct {
 	Name string `json:"name"`
+}
+
+// EffortInfo carries the reasoning effort level (low, medium, high, xhigh,
+// max). Absent when the model does not support the effort parameter.
+type EffortInfo struct {
+	Level string `json:"level"`
+}
+
+// PRInfo describes the open pull request for the current branch, or the open
+// merge request when Kind is "mr". Absent when there is none.
+type PRInfo struct {
+	Number      int    `json:"number"`
+	ReviewState string `json:"review_state"`
+	Kind        string `json:"kind"`
 }
 
 // Git info collected from parallel commands
@@ -286,16 +305,22 @@ func shortenPath(dir, homeDir string) string {
 
 func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir, sandbox string) {
 
-	// ── Line 1: sbx[id] | [Model:style] | @agent | dir ──
+	// ── Line 1: sbx[id] | [Model:style:effort] | fast | @agent | dir ──
 	if sandbox != "" {
 		fmt.Fprint(w, yellow+sandbox+reset+" | ")
 	}
 
-	model := strings.TrimPrefix(input.Model.DisplayName, "Claude ")
+	chip := strings.TrimPrefix(input.Model.DisplayName, "Claude ")
 	if input.OutputStyle.Name != "" && input.OutputStyle.Name != "default" {
-		fmt.Fprintf(w, cyan+"[%s:%s]"+reset, model, input.OutputStyle.Name)
-	} else {
-		fmt.Fprintf(w, cyan+"[%s]"+reset, model)
+		chip += ":" + input.OutputStyle.Name
+	}
+	if input.Effort.Level != "" {
+		chip += ":" + input.Effort.Level
+	}
+	fmt.Fprintf(w, cyan+"[%s]"+reset, chip)
+
+	if input.FastMode {
+		fmt.Fprint(w, " | "+yellow+"fast"+reset)
 	}
 
 	if input.Agent.Name != "" {
@@ -308,7 +333,7 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 
 	fmt.Fprintln(w)
 
-	// ── Line 2: repo:branch status | [hash] message | wt ──
+	// ── Line 2: repo:branch status | PR#n | [hash] message | wt ──
 	if git.RepoName != "" || git.Branch != "" {
 		if git.RepoName != "" {
 			fmt.Fprint(w, green+git.RepoName+reset)
@@ -334,6 +359,8 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 			fmt.Fprint(w, " "+red+gitStatus+reset)
 		}
 
+		renderPR(w, input.PR)
+
 		if git.ShortHash != "" {
 			fmt.Fprint(w, " | "+dim+"["+reset+yellowDim+git.ShortHash+reset+dim+"]"+reset)
 			if git.CommitMessage != "" {
@@ -341,7 +368,11 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 			}
 		}
 
-		if git.IsWorktree {
+		// Claude Code reports the worktree name for any linked worktree; the
+		// git-dir probe is the fallback for versions that omit the field.
+		if wt := input.Workspace.GitWorktree; wt != "" {
+			fmt.Fprint(w, " | "+yellow+"wt:"+wt+reset)
+		} else if git.IsWorktree {
 			fmt.Fprint(w, " | "+yellow+"wt"+reset)
 		}
 
@@ -414,6 +445,32 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 	}
 
 	fmt.Fprintln(w)
+}
+
+// renderPR appends the open pull request (or GitLab merge request), colored by
+// review state.
+func renderPR(w io.Writer, pr *PRInfo) {
+	if pr == nil || pr.Number == 0 {
+		return
+	}
+
+	label := fmt.Sprintf("PR#%d", pr.Number)
+	if pr.Kind == "mr" {
+		// GitLab refers to merge requests as !123.
+		label = fmt.Sprintf("MR!%d", pr.Number)
+	}
+
+	color, marker := blue, ""
+	switch pr.ReviewState {
+	case "approved":
+		color, marker = green, " ✓"
+	case "changes_requested":
+		color, marker = red, " ✗"
+	case "draft":
+		color, marker = dim, " draft"
+	}
+
+	fmt.Fprintf(w, " | %s%s%s%s", color, label, marker, reset)
 }
 
 func renderRateLimits(w io.Writer, rl *RateLimits, now time.Time) {
