@@ -20,3 +20,7 @@ run = ["go vet ./...", "golangci-lint run", "govulncheck ./..."]
 [tasks.format-check]
 description = "Require goimports-clean source"
 run = "test -z \"$(goimports -l .)\""
+
+[tasks.release]
+description = "Tag the next release (version computed from merged PR labels) and push"
+run = "scripts/release.sh"
