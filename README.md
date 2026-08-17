@@ -88,6 +88,21 @@ my-repo:main | [abc1234] Last commit message
 - **Line 2** (git): Repo, branch, dirty/ahead/behind, commit hash + message, worktree — skipped outside git repos
 - **Line 3** (metrics): Context bar, percentage (with `!` warning above 200k tokens), free tokens, lines changed, duration, cost (API) or rate limits with reset countdown (subscribers)
 
+## Releasing
+
+Releases are cut by pushing a signed `v*` tag: the [release workflow](.github/workflows/release.yml) verifies the tag signature, builds the binaries, attests provenance and publishes the release with auto-generated notes. Tag creation is deliberately manual — the tag ruleset requires a signature from a maintainer key, and CI/API-created tags are unsigned, so a human signs off on every release.
+
+Everything except the signature is automated by `mise run release`, which:
+
+1. Requires a clean `main` in sync with `origin/main`.
+2. Lists the PRs merged since the last `v*` tag with their labels, and computes the next version from those labels (the same labels that group the release notes), highest bump wins:
+   - `breaking` → major (minor while still on `0.x`)
+   - `feature` / `enhancement` → minor
+   - anything else (`bug`, `dependencies`) → patch
+3. Proposes the version and waits for confirmation — accept it, type a different `vX.Y.Z`, or abort. Only then does it create the signed annotated tag and push it.
+
+Pass an explicit version to skip the computation: `mise run release -- v1.2.3`.
+
 ## License
 
 MIT — see [LICENSE](LICENSE) for details.
