@@ -1,3 +1,4 @@
+// Command claude-statusline renders a rich statusline for Claude Code.
 package main
 
 import (
@@ -184,7 +185,7 @@ func gitCmd(ctx context.Context, dir string, args ...string) (string, error) {
 	// Use --no-optional-locks to avoid creating .git/index.lock, which would
 	// conflict with concurrent git operations by Claude Code or editors.
 	fullArgs := append([]string{"--no-optional-locks"}, args...)
-	cmd := exec.CommandContext(ctx, "git", fullArgs...)
+	cmd := exec.CommandContext(ctx, "git", fullArgs...) // #nosec G204 -- fixed binary, args are internal constants
 	cmd.Dir = dir
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -197,9 +198,10 @@ func gitCmd(ctx context.Context, dir string, args ...string) (string, error) {
 
 func parseGitStatus(output string) (branch, shortHash, ahead, behind string, dirty bool) {
 	for _, line := range strings.Split(output, "\n") {
-		if strings.HasPrefix(line, "# branch.head ") {
+		switch {
+		case strings.HasPrefix(line, "# branch.head "):
 			branch = strings.TrimPrefix(line, "# branch.head ")
-		} else if strings.HasPrefix(line, "# branch.oid ") {
+		case strings.HasPrefix(line, "# branch.oid "):
 			oid := strings.TrimPrefix(line, "# branch.oid ")
 			if isHexString(oid) {
 				if len(oid) >= 7 {
@@ -208,7 +210,7 @@ func parseGitStatus(output string) (branch, shortHash, ahead, behind string, dir
 					shortHash = oid
 				}
 			}
-		} else if strings.HasPrefix(line, "# branch.ab ") {
+		case strings.HasPrefix(line, "# branch.ab "):
 			parts := strings.Fields(line)
 			if len(parts) >= 4 {
 				if parts[2] != "+0" {
@@ -218,7 +220,7 @@ func parseGitStatus(output string) (branch, shortHash, ahead, behind string, dir
 					behind = parts[3][1:] // strip the -
 				}
 			}
-		} else if len(line) > 0 && (line[0] == '1' || line[0] == '2' || line[0] == 'u' || line[0] == '?') {
+		case len(line) > 0 && (line[0] == '1' || line[0] == '2' || line[0] == 'u' || line[0] == '?'):
 			dirty = true
 		}
 	}
@@ -238,7 +240,7 @@ func isHexString(s string) bool {
 		return false
 	}
 	for _, c := range s {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
 			return false
 		}
 	}
