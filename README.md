@@ -13,11 +13,15 @@ The original bash implementation spawns ~10 sequential git subprocesses and ~15 
 
 ## Installation
 
-Download the latest release:
+Download the latest release for your platform (macOS arm64, Linux arm64/amd64, Windows amd64):
 
 ```sh
-curl -L https://github.com/strayer/claude-code-statusline/releases/latest/download/claude-statusline -o ~/.claude/claude-statusline && chmod +x ~/.claude/claude-statusline
+os=$(uname -s | tr '[:upper:]' '[:lower:]')
+arch=$(uname -m); case "$arch" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
+curl -fL "https://github.com/strayer/claude-code-statusline/releases/latest/download/claude-statusline-$os-$arch" -o ~/.claude/claude-statusline && chmod +x ~/.claude/claude-statusline
 ```
+
+On Windows, download `claude-statusline-windows-amd64.exe` from the [releases page](https://github.com/strayer/claude-code-statusline/releases/latest).
 
 Or build from source (requires Go):
 
@@ -25,6 +29,20 @@ Or build from source (requires Go):
 CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o claude-statusline
 cp claude-statusline ~/.claude/claude-statusline
 ```
+
+### Verifying releases
+
+Release binaries are built by GitHub Actions with signed [SLSA build provenance](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds). To verify a download was built from this repository by CI (requires the [GitHub CLI](https://cli.github.com/)):
+
+```sh
+gh attestation verify ~/.claude/claude-statusline \
+  --repo strayer/claude-code-statusline \
+  --signer-workflow strayer/claude-code-statusline/.github/workflows/release.yml
+```
+
+The `--signer-workflow` flag ensures the attestation was produced by this repository's release workflow specifically, not just any workflow in the repository.
+
+Each release also includes a `checksums.txt` with the binary's SHA-256 hash.
 
 Then configure in `~/.claude/settings.json`:
 

@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify signed tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME")
+          if [ "$(jq -r '.object.type' <<<"$ref")" != "tag" ]; then
+            echo "::error::$GITHUB_REF_NAME is a lightweight tag; only signed annotated tags may be released"
+            exit 1
+          fi
+          tag=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r '.object.sha' <<<"$ref")")
+          if [ "$(jq -r '.verification.verified' <<<"$tag")" != "true" ]; then
+            echo "::error::tag $GITHUB_REF_NAME signature not verified (reason: $(jq -r '.verification.reason' <<<"$tag"))"
+            exit 1
+          fi
+          # Bind the signed tag object to this ref and build: the signed-in name
+          # must match the pushed ref, and the tag must point at the exact commit
+          # being built. Prevents replaying an old signed tag under a new name.
+          if [ "$(jq -r '.tag' <<<"$tag")" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::signed tag name '$(jq -r '.tag' <<<"$tag")' does not match pushed ref $GITHUB_REF_NAME"
+            exit 1
+          fi
+          if [ "$(jq -r '.object.type' <<<"$tag")" != "commit" ] || [ "$(jq -r '.object.sha' <<<"$tag")" != "$GITHUB_SHA" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not point at the commit being built ($GITHUB_SHA)"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p dist
+          for target in darwin/arm64 linux/arm64 linux/amd64 windows/amd64; do
+            goos=${target%/*} goarch=${target#*/}
+            ext=""
+            [ "$goos" = "windows" ] && ext=".exe"
+            GOOS=$goos GOARCH=$goarch go build -trimpath -ldflags="-s -w -buildid=" \
+              -o "dist/claude-statusline-$goos-$goarch$ext"
+          done
+
+      - name: Checksums
+        run: cd dist && sha256sum claude-statusline-* > checksums.txt
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/claude-statusline-*
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes
