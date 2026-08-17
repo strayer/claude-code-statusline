@@ -109,7 +109,19 @@ func main() {
 
 	homeDir, _ := os.UserHomeDir()
 	gitInfo := collectGitInfo(input.Workspace.CurrentDir)
-	renderOutput(os.Stdout, input, gitInfo, time.Now(), homeDir)
+	renderOutput(os.Stdout, input, gitInfo, time.Now(), homeDir, detectSandbox())
+}
+
+// detectSandbox returns a label when running inside an agent sandbox
+// (e.g. Docker AI Agent Sandboxes), detected via inherited env vars.
+func detectSandbox() string {
+	if id := os.Getenv("SANDBOX_VM_ID"); id != "" {
+		return "sbx[" + id + "]"
+	}
+	if os.Getenv("IS_SANDBOX") != "" {
+		return "sbx"
+	}
+	return ""
 }
 
 func collectGitInfo(dir string) GitInfo {
@@ -272,9 +284,13 @@ func shortenPath(dir, homeDir string) string {
 	return dir
 }
 
-func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir string) {
+func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir, sandbox string) {
 
-	// ── Line 1: [Model:style] | @agent | dir ──
+	// ── Line 1: sbx[id] | [Model:style] | @agent | dir ──
+	if sandbox != "" {
+		fmt.Fprint(w, yellow+sandbox+reset+" | ")
+	}
+
 	model := strings.TrimPrefix(input.Model.DisplayName, "Claude ")
 	if input.OutputStyle.Name != "" && input.OutputStyle.Name != "default" {
 		fmt.Fprintf(w, cyan+"[%s:%s]"+reset, model, input.OutputStyle.Name)
