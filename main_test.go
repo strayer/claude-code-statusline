@@ -141,7 +141,13 @@ var testNow = time.Unix(1738400000, 0)
 
 func render(input Input, git GitInfo) string {
 	var buf bytes.Buffer
-	renderOutput(&buf, input, git, testNow, "/home/user")
+	renderOutput(&buf, input, git, testNow, "/home/user", "")
+	return buf.String()
+}
+
+func renderSandbox(input Input, git GitInfo, sandbox string) string {
+	var buf bytes.Buffer
+	renderOutput(&buf, input, git, testNow, "/home/user", sandbox)
 	return buf.String()
 }
 
@@ -315,6 +321,25 @@ func TestRenderOutput(t *testing.T) {
 
 		if !strings.Contains(out, "wt") {
 			t.Errorf("expected wt indicator in output, got: %q", out)
+		}
+	})
+
+	t.Run("sandbox indicator before model", func(t *testing.T) {
+		out := renderSandbox(defaultInput(), GitInfo{}, "sbx[my-project]")
+
+		line1 := strings.Split(out, "\n")[0]
+		sbxIdx := strings.Index(line1, "sbx[my-project]")
+		modelIdx := strings.Index(line1, "[Sonnet 4]")
+		if sbxIdx < 0 || modelIdx < 0 || sbxIdx > modelIdx {
+			t.Errorf("expected sandbox indicator before model on line 1, got: %q", line1)
+		}
+	})
+
+	t.Run("no sandbox indicator when empty", func(t *testing.T) {
+		out := render(defaultInput(), GitInfo{})
+
+		if strings.Contains(out, "sbx") {
+			t.Errorf("expected no sandbox indicator, got: %q", out)
 		}
 	})
 
@@ -502,6 +527,31 @@ func TestRenderDir(t *testing.T) {
 			t.Errorf("expected no pipes without dir or agent, got: %q", line1)
 		}
 	})
+}
+
+func TestDetectSandbox(t *testing.T) {
+	tests := []struct {
+		name      string
+		isSandbox string
+		vmID      string
+		want      string
+	}{
+		{"vm id shown with brackets", "1", "my-vm", "sbx[my-vm]"},
+		{"vm id alone is enough", "", "my-vm", "sbx[my-vm]"},
+		{"is_sandbox alone shows plain sbx", "1", "", "sbx"},
+		{"neither set means no indicator", "", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("IS_SANDBOX", tt.isSandbox)
+			t.Setenv("SANDBOX_VM_ID", tt.vmID)
+			got := detectSandbox()
+			if got != tt.want {
+				t.Errorf("detectSandbox() = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestTruncateCommitMessage(t *testing.T) {
