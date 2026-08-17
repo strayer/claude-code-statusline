@@ -324,6 +324,56 @@ func TestRenderOutput(t *testing.T) {
 		}
 	})
 
+	t.Run("effort level in model chip", func(t *testing.T) {
+		in := defaultInput()
+		in.Effort = EffortInfo{Level: "high"}
+		out := render(in, GitInfo{})
+
+		if !strings.Contains(out, "[Sonnet 4:high]") {
+			t.Errorf("expected effort in model chip, got: %q", out)
+		}
+	})
+
+	t.Run("effort follows output style in model chip", func(t *testing.T) {
+		in := defaultInput()
+		in.OutputStyle = OutputStyle{Name: "concise"}
+		in.Effort = EffortInfo{Level: "xhigh"}
+		out := render(in, GitInfo{})
+
+		if !strings.Contains(out, "[Sonnet 4:concise:xhigh]") {
+			t.Errorf("expected model:style:effort chip, got: %q", out)
+		}
+	})
+
+	t.Run("no effort segment when absent", func(t *testing.T) {
+		out := render(defaultInput(), GitInfo{})
+
+		if !strings.Contains(out, "[Sonnet 4]") {
+			t.Errorf("expected bare model chip, got: %q", out)
+		}
+	})
+
+	t.Run("fast mode marker after model", func(t *testing.T) {
+		in := defaultInput()
+		in.FastMode = true
+		out := render(in, GitInfo{})
+
+		line1 := strings.Split(out, "\n")[0]
+		modelIdx := strings.Index(line1, "[Sonnet 4]")
+		fastIdx := strings.Index(line1, "fast")
+		if modelIdx < 0 || fastIdx < 0 || modelIdx > fastIdx {
+			t.Errorf("expected fast marker after model on line 1, got: %q", line1)
+		}
+	})
+
+	t.Run("no fast marker when disabled", func(t *testing.T) {
+		out := render(defaultInput(), GitInfo{})
+
+		if strings.Contains(out, "fast") {
+			t.Errorf("expected no fast marker, got: %q", out)
+		}
+	})
+
 	t.Run("sandbox indicator before model", func(t *testing.T) {
 		out := renderSandbox(defaultInput(), GitInfo{}, "sbx[my-project]")
 
@@ -351,6 +401,168 @@ func TestRenderOutput(t *testing.T) {
 
 		if !strings.Contains(out, "Sonnet 4") {
 			t.Errorf("expected model in output, got: %q", out)
+		}
+	})
+}
+
+func TestRenderPR(t *testing.T) {
+	gitRepo := GitInfo{RepoName: "myrepo", Branch: "feature", ShortHash: "abc1234"}
+
+	t.Run("pull request shown on git line", func(t *testing.T) {
+		in := defaultInput()
+		in.PR = &PRInfo{Number: 1234, ReviewState: "pending"}
+		out := render(in, gitRepo)
+
+		if !strings.Contains(out, "PR#1234") {
+			t.Errorf("expected PR#1234 in output, got: %q", out)
+		}
+	})
+
+	t.Run("pull request between branch and commit hash", func(t *testing.T) {
+		in := defaultInput()
+		in.PR = &PRInfo{Number: 7}
+		out := render(in, gitRepo)
+
+		line2 := strings.Split(out, "\n")[1]
+		branchIdx := strings.Index(line2, "feature")
+		prIdx := strings.Index(line2, "PR#7")
+		hashIdx := strings.Index(line2, "abc1234")
+		if branchIdx < 0 || prIdx < 0 || hashIdx < 0 || branchIdx > prIdx || prIdx > hashIdx {
+			t.Errorf("expected branch < PR < hash on line 2, got: %q", line2)
+		}
+	})
+
+	t.Run("approved shows green check", func(t *testing.T) {
+		in := defaultInput()
+		in.PR = &PRInfo{Number: 12, ReviewState: "approved"}
+		out := render(in, gitRepo)
+
+		if !strings.Contains(out, green+"PR#12 ✓") {
+			t.Errorf("expected green approved marker, got: %q", out)
+		}
+	})
+
+	t.Run("changes requested shows red cross", func(t *testing.T) {
+		in := defaultInput()
+		in.PR = &PRInfo{Number: 12, ReviewState: "changes_requested"}
+		out := render(in, gitRepo)
+
+		if !strings.Contains(out, red+"PR#12 ✗") {
+			t.Errorf("expected red changes-requested marker, got: %q", out)
+		}
+	})
+
+	t.Run("draft labelled", func(t *testing.T) {
+		in := defaultInput()
+		in.PR = &PRInfo{Number: 12, ReviewState: "draft"}
+		out := render(in, gitRepo)
+
+		if !strings.Contains(out, "PR#12 draft") {
+			t.Errorf("expected draft label, got: %q", out)
+		}
+	})
+
+	t.Run("unknown review state renders plain label", func(t *testing.T) {
+		in := defaultInput()
+		in.PR = &PRInfo{Number: 12, ReviewState: "something_new"}
+		out := render(in, gitRepo)
+
+		if !strings.Contains(out, "PR#12") {
+			t.Errorf("expected plain PR label, got: %q", out)
+		}
+		if strings.Contains(out, "something_new") {
+			t.Errorf("unknown review state should not be printed, got: %q", out)
+		}
+	})
+
+	t.Run("gitlab merge request uses bang notation", func(t *testing.T) {
+		in := defaultInput()
+		in.PR = &PRInfo{Number: 42, Kind: "mr", ReviewState: "approved"}
+		out := render(in, gitRepo)
+
+		if !strings.Contains(out, "MR!42 ✓") {
+			t.Errorf("expected MR!42 for merge request, got: %q", out)
+		}
+		if strings.Contains(out, "PR#") {
+			t.Errorf("merge request should not render as PR, got: %q", out)
+		}
+	})
+
+	t.Run("no pr segment when absent", func(t *testing.T) {
+		out := render(defaultInput(), gitRepo)
+
+		if strings.Contains(out, "PR#") || strings.Contains(out, "MR!") {
+			t.Errorf("expected no PR segment, got: %q", out)
+		}
+	})
+
+	t.Run("zero number treated as absent", func(t *testing.T) {
+		in := defaultInput()
+		in.PR = &PRInfo{Number: 0, ReviewState: "pending"}
+		out := render(in, gitRepo)
+
+		if strings.Contains(out, "PR#") {
+			t.Errorf("expected no PR segment for zero number, got: %q", out)
+		}
+	})
+
+	t.Run("no pr segment outside git repo", func(t *testing.T) {
+		in := defaultInput()
+		in.PR = &PRInfo{Number: 1234}
+		out := render(in, GitInfo{})
+
+		if strings.Contains(out, "PR#1234") {
+			t.Errorf("expected no PR segment without a git line, got: %q", out)
+		}
+	})
+}
+
+func TestRenderWorktree(t *testing.T) {
+	gitRepo := GitInfo{RepoName: "myrepo", Branch: "feature-xyz"}
+
+	t.Run("worktree name from session data", func(t *testing.T) {
+		in := defaultInput()
+		in.Workspace.GitWorktree = "feature-xyz"
+		out := render(in, gitRepo)
+
+		if !strings.Contains(out, "wt:feature-xyz") {
+			t.Errorf("expected named worktree indicator, got: %q", out)
+		}
+	})
+
+	t.Run("session data preferred over git detection", func(t *testing.T) {
+		in := defaultInput()
+		in.Workspace.GitWorktree = "feature-xyz"
+		git := gitRepo
+		git.IsWorktree = true
+		out := render(in, git)
+
+		if !strings.Contains(out, "wt:feature-xyz") {
+			t.Errorf("expected named worktree indicator, got: %q", out)
+		}
+		if strings.Contains(out, "| "+yellow+"wt"+reset) {
+			t.Errorf("expected no bare wt indicator alongside the name, got: %q", out)
+		}
+	})
+
+	t.Run("falls back to git detection without session data", func(t *testing.T) {
+		git := gitRepo
+		git.IsWorktree = true
+		out := render(defaultInput(), git)
+
+		if !strings.Contains(out, "wt") {
+			t.Errorf("expected bare wt indicator, got: %q", out)
+		}
+		if strings.Contains(out, "wt:") {
+			t.Errorf("expected no worktree name, got: %q", out)
+		}
+	})
+
+	t.Run("no indicator in main working tree", func(t *testing.T) {
+		out := render(defaultInput(), gitRepo)
+
+		if strings.Contains(out, "wt") {
+			t.Errorf("expected no worktree indicator, got: %q", out)
 		}
 	})
 }
