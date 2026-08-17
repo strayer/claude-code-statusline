@@ -6,6 +6,16 @@
   ],
   "labels": ["dependencies"],
   "rangeStrategy": "pin",
+  "customManagers": [
+    {
+      // track `go install tool@version` lines in workflows so tool versions
+      // stay in sync with mise.toml
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github\\/workflows\\/.+\\.ya?ml$/"],
+      "matchStrings": ["go install (?<depName>\\S+?)@(?<currentValue>v[\\d.]+)"],
+      "datasourceTemplate": "go"
+    }
+  ],
   "packageRules": [
     {
       "matchManagers": ["github-actions"],
@@ -18,6 +28,17 @@
     {
       "matchManagers": ["mise"],
       "groupName": "mise tools"
+    },
+    {
+      // tools pinned in both mise.toml and ci.yml must update together,
+      // regardless of which manager found them (last rule wins)
+      "groupName": "Go dev tools",
+      "matchPackageNames": [
+        "golangci/golangci-lint",
+        "golangci-lint",
+        "/golang\\.org/x/tools/cmd/goimports$/",
+        "/golang\\.org/x/vuln/cmd/govulncheck$/"
+      ]
     }
   ]
 }
