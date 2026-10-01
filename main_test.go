@@ -998,6 +998,10 @@ func TestVisibleWidth(t *testing.T) {
 		{hyperlink("https://example.com", "PR#13"), 5},
 		{"⣿⣤…", 3},
 		{"\033]8;;u\atext\033]8;;\a", 4},
+		{"日本語", 6},
+		{"fix 🐛 bug", 10},
+		{"cafe\u0301", 4}, // e + combining acute
+		{"👍\ufe0f", 2},    // emoji + variation selector
 	}
 	for _, tt := range tests {
 		if got := visibleWidth(tt.in); got != tt.want {
@@ -1045,4 +1049,56 @@ func TestColumnsFit(t *testing.T) {
 			t.Errorf("expected fixed-length path and full message, got: %q", out)
 		}
 	})
+}
+
+func TestTruncateWidth(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		n    int
+		want string
+	}{
+		{"fits", "abc", 3, "abc"},
+		{"ascii cut", "abcdef", 4, "abc…"},
+		{"wide cut stays within budget", "日本語テキスト", 6, "日本…"},
+		{"wide char not split", "a日本", 3, "a…"},
+		{"combining mark kept with base", "cafe\u0301s", 5, "cafe\u0301s"},
+		{"emoji", "🐛🐛🐛", 5, "🐛🐛…"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncateWidth(tt.in, tt.n)
+			if got != tt.want {
+				t.Errorf("truncateWidth(%q, %d) = %q, want %q", tt.in, tt.n, got, tt.want)
+			}
+			if w := visibleWidth(got); w > tt.n {
+				t.Errorf("width %d exceeds %d: %q", w, tt.n, got)
+			}
+		})
+	}
+}
+
+func TestWideCharactersFit(t *testing.T) {
+	in := defaultInput()
+	in.SessionName = strings.Repeat("会話", 20)
+	in.Workspace.CurrentDir = "/home/user/プロジェクト/" + strings.Repeat("ディレクトリ/", 8) + "src"
+	git := GitInfo{
+		RepoName:      "repo",
+		Branch:        "main",
+		ShortHash:     "abc1234",
+		CommitMessage: strings.Repeat("🐛 修正 ", 12),
+	}
+
+	for _, cols := range []int{50, 80, 120} {
+		lines := strings.Split(renderCols(in, git, cols), "\n")[:2]
+		for _, l := range lines {
+			if w := visibleWidth(l); w > cols-widthReserve {
+				t.Errorf("cols=%d: line width %d exceeds %d: %q", cols, w, cols-widthReserve, l)
+			}
+		}
+	}
+
+	if got := shortenPath("/opt/日本語/日本語/日本語", "", 10); visibleWidth(got) > 10 {
+		t.Errorf("shortenPath width %d exceeds 10: %q", visibleWidth(got), got)
+	}
 }

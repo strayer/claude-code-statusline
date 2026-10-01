@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -338,28 +339,115 @@ func shortenPath(dir, homeDir string, maxLen int) string {
 		dir = "~" + dir[len(homeDir):]
 	}
 
-	runes := []rune(dir)
-	if len(runes) <= maxLen {
+	if visibleWidth(dir) <= maxLen {
 		return dir
 	}
-	// Keep the last maxLen-1 characters, leaving room for the ellipsis.
-	cut := string(runes[len(runes)-max(maxLen-1, 1):])
+	// Keep the tail that fits in maxLen-1 columns, leaving room for the
+	// ellipsis.
+	room := max(maxLen-1, 1)
+	start := len(dir)
+	for start > 0 {
+		r, size := utf8.DecodeLastRuneInString(dir[:start])
+		w := runeWidth(r)
+		if w > room {
+			break
+		}
+		room -= w
+		start -= size
+	}
+	cut := dir[start:]
 	if i := strings.Index(cut, "/"); i >= 0 {
 		return "…" + cut[i:]
 	}
 	return "…" + cut
 }
 
-// truncateRunes shortens s to at most n characters, ellipsis included.
-func truncateRunes(s string, n int) string {
-	runes := []rune(s)
-	if len(runes) <= n {
+// truncateWidth shortens s to at most n terminal columns, ellipsis included.
+func truncateWidth(s string, n int) string {
+	if visibleWidth(s) <= n {
 		return s
 	}
-	if n <= 1 {
-		return "…"
+	room := max(n-1, 0)
+	end := 0
+	for end < len(s) {
+		r, size := utf8.DecodeRuneInString(s[end:])
+		w := runeWidth(r)
+		if w > room {
+			break
+		}
+		room -= w
+		end += size
 	}
-	return string(runes[:n-1]) + "…"
+	return s[:end] + "…"
+}
+
+// wideRanges lists the East Asian Wide/Fullwidth blocks and the emoji blocks,
+// which terminals draw two columns wide. Approximate on purpose: it covers
+// what turns up in session names, paths and commit messages without pulling
+// in a full Unicode width table.
+var wideRanges = [][2]rune{
+	{0x1100, 0x115F},   // Hangul Jamo
+	{0x231A, 0x231B},   // watch, hourglass
+	{0x23E9, 0x23F3},   // media control emoji
+	{0x25FD, 0x25FE},   // small squares
+	{0x2614, 0x2615},   // umbrella, hot beverage
+	{0x2648, 0x2653},   // zodiac
+	{0x26A1, 0x26A1},   // high voltage
+	{0x26AA, 0x26AB},   // circles
+	{0x26BD, 0x26BE},   // soccer, baseball
+	{0x26C4, 0x26C5},   // snowman, sun behind cloud
+	{0x26D4, 0x26D4},   // no entry
+	{0x26EA, 0x26EA},   // church
+	{0x26F2, 0x26F5},   // fountain … sailboat
+	{0x26FA, 0x26FD},   // tent … fuel pump
+	{0x2705, 0x2705},   // check mark button
+	{0x270A, 0x270B},   // raised fist, hand
+	{0x2728, 0x2728},   // sparkles
+	{0x274C, 0x274C},   // cross mark
+	{0x2753, 0x2757},   // question/exclamation marks
+	{0x2795, 0x2797},   // plus, minus, divide
+	{0x27B0, 0x27B0},   // curly loop
+	{0x2B1B, 0x2B1C},   // large squares
+	{0x2B50, 0x2B50},   // star
+	{0x2E80, 0x303E},   // CJK radicals, punctuation
+	{0x3041, 0x33FF},   // Hiragana, Katakana, CJK compatibility
+	{0x3400, 0x4DBF},   // CJK extension A
+	{0x4E00, 0x9FFF},   // CJK unified ideographs
+	{0xA000, 0xA4CF},   // Yi
+	{0xAC00, 0xD7A3},   // Hangul syllables
+	{0xF900, 0xFAFF},   // CJK compatibility ideographs
+	{0xFE30, 0xFE4F},   // CJK compatibility forms
+	{0xFF00, 0xFF60},   // fullwidth forms
+	{0xFFE0, 0xFFE6},   // fullwidth signs
+	{0x1F004, 0x1F004}, // mahjong
+	{0x1F0CF, 0x1F0CF}, // joker
+	{0x1F18E, 0x1F18E}, // AB button
+	{0x1F191, 0x1F19A}, // squared words
+	{0x1F200, 0x1F251}, // enclosed ideographic supplement
+	{0x1F300, 0x1F64F}, // pictographs, emoticons
+	{0x1F680, 0x1F6FF}, // transport and map
+	{0x1F7E0, 0x1F7EB}, // colored circles and squares
+	{0x1F90C, 0x1F9FF}, // supplemental symbols and pictographs
+	{0x1FA70, 0x1FAFF}, // symbols and pictographs extended-A
+	{0x20000, 0x3FFFD}, // CJK extensions B and beyond
+}
+
+// runeWidth returns the terminal columns r occupies: 0 for combining and
+// format characters (accents, zero-width joiner, variation selectors), 2 for
+// wide characters, 1 otherwise.
+func runeWidth(r rune) int {
+	if unicode.In(r, unicode.Mn, unicode.Me, unicode.Cf) {
+		return 0
+	}
+	for _, rg := range wideRanges {
+		if r < rg[0] {
+			break
+		}
+		if r <= rg[1] {
+			return 2
+		}
+	}
+	return 1
 }
 
 // hyperlink wraps text in an OSC 8 link. Terminals without link support show
@@ -372,7 +460,7 @@ func hyperlink(url, text string) string {
 	return "\033]8;;" + url + "\a" + text + "\033]8;;\a"
 }
 
-// visibleWidth counts the characters a terminal displays, skipping ANSI color
+// visibleWidth counts the terminal columns s occupies, skipping ANSI color
 // (CSI) and OSC hyperlink sequences.
 func visibleWidth(s string) int {
 	n := 0
@@ -398,9 +486,9 @@ func visibleWidth(s string) int {
 				continue
 			}
 		}
-		_, size := utf8.DecodeRuneInString(s[i:])
+		r, size := utf8.DecodeRuneInString(s[i:])
 		i += size
-		n++
+		n += runeWidth(r)
 	}
 	return n
 }
@@ -465,11 +553,11 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 		maxLen := defaultNameLen
 		if b := budget(cols, visibleWidth(line.String())+len(" | ")); b >= 0 {
 			if dir := input.Workspace.CurrentDir; dir != "" {
-				b -= len(" | ") + utf8.RuneCountInString(shortenPath(dir, homeDir, defaultPathLen))
+				b -= len(" | ") + visibleWidth(shortenPath(dir, homeDir, defaultPathLen))
 			}
 			maxLen = max(b, minNameLen)
 		}
-		line.WriteString(" | " + bold + truncateRunes(name, maxLen) + reset)
+		line.WriteString(" | " + bold + truncateWidth(name, maxLen) + reset)
 	}
 
 	if dir := input.Workspace.CurrentDir; dir != "" {
@@ -534,7 +622,7 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 				case b < 0:
 					line.WriteString(" " + msg)
 				case b >= minMessageLen:
-					line.WriteString(" " + truncateRunes(msg, b))
+					line.WriteString(" " + truncateWidth(msg, b))
 				}
 			}
 		}
