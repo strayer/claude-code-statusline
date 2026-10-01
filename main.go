@@ -363,12 +363,13 @@ func truncateRunes(s string, n int) string {
 }
 
 // hyperlink wraps text in an OSC 8 link. Terminals without link support show
-// the text alone.
+// the text alone. The sequences end in BEL rather than ST (ESC \\): Claude Code
+// re-renders the statusline and drops ST-terminated links.
 func hyperlink(url, text string) string {
 	if url == "" || strings.ContainsFunc(url, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 		return text
 	}
-	return "\033]8;;" + url + "\033\\" + text + "\033]8;;\033\\"
+	return "\033]8;;" + url + "\a" + text + "\033]8;;\a"
 }
 
 // visibleWidth counts the characters a terminal displays, skipping ANSI color

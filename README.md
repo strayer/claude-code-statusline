@@ -100,6 +100,14 @@ my-repo:main | [abc1234] Last commit message
 
 The session name, directory and commit message are sized to the terminal width Claude Code passes in `COLUMNS`: the session name gives way before the directory, and the commit message is dropped when there's no room. Without `COLUMNS` they fall back to fixed limits. Repo and PR links use OSC 8 hyperlinks (Cmd/Ctrl+click) in terminals that support them.
 
+Claude Code re-renders the statusline and strips these links when it doesn't detect hyperlink support, even if the terminal has it. This happens inside multiplexers that set their own `TERM_PROGRAM`, such as [herdr](https://github.com/herdrdev/herdr/issues/4748). Its own footer links can still work in fullscreen mode, so their being clickable doesn't mean statusline links will be. Set `FORCE_HYPERLINK=1` before starting Claude Code to override the detection, e.g. in fish:
+
+```fish
+if status --is-interactive; and test "$TERM_PROGRAM" = herdr
+  set -gx FORCE_HYPERLINK 1
+end
+```
+
 ### Model chip
 
 The bracketed chip reads `[model:style:effort]`. The output style is omitted when it is `default`, and the [reasoning effort](https://code.claude.com/docs/en/statusline#available-data) (`low`, `medium`, `high`, `xhigh`, `max`) is omitted for models without an effort parameter — so a plain session shows just `[Opus 4.6]`. Effort tracks mid-session `/effort` changes; ultracode reports as `xhigh`.

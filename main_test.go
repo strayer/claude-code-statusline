@@ -900,7 +900,7 @@ func TestRepoIdentity(t *testing.T) {
 		if !strings.Contains(line2, "claude-code-statusline") || strings.Contains(line2, "feature-xyz") {
 			t.Errorf("expected repo name from workspace, got: %q", line2)
 		}
-		if !strings.Contains(line2, "\033]8;;https://github.com/strayer/claude-code-statusline\033\\") {
+		if !strings.Contains(line2, hyperlink("https://github.com/strayer/claude-code-statusline", "claude-code-statusline")) {
 			t.Errorf("expected repo hyperlink, got: %q", line2)
 		}
 	})
@@ -918,6 +918,12 @@ func TestRepoIdentity(t *testing.T) {
 		out := render(in, GitInfo{Branch: "main"})
 		if !strings.Contains(out, hyperlink("https://github.com/o/r/pull/13", "PR#13")) {
 			t.Errorf("expected PR hyperlink, got: %q", out)
+		}
+	})
+
+	t.Run("link ends in BEL", func(t *testing.T) {
+		if got, want := hyperlink("https://x", "t"), "\033]8;;https://x\at\033]8;;\a"; got != want {
+			t.Errorf("hyperlink = %q, want %q", got, want)
 		}
 	})
 
