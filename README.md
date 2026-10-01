@@ -56,6 +56,8 @@ Then configure in `~/.claude/settings.json`:
 }
 ```
 
+If you use [vim mode](https://code.claude.com/docs/en/interactive-mode#vim-editor-mode), add `"hideVimModeIndicator": true` to `statusLine`. The statusline shows the mode itself, so it isn't shown twice.
+
 ## Output
 
 Up to three lines, grouped by concern:
@@ -71,9 +73,9 @@ my-repo:main *↑2↓1 | PR#13 ✓ | [abc1234] Last commit message
 Subscriber (Claude.ai Pro/Max), with [fast mode](https://code.claude.com/docs/en/fast-mode) on:
 
 ```
-[Opus 4.6:xhigh] | fast | @agent | ~/dev/my-project
+[Opus 4.6:xhigh] | fast | @agent | fix flaky tests | ~/dev/my-project
 my-repo:feature-branch | PR#14 | [def5678] Add new feature
-[⣿⣿⣿⣿⣤⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀] 30% | 140k free | +200/-50 | 45m | 5h: 80% (3h) | 7d: 55% (4d)
+[⣿⣿⣿⣿⣤⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀] 30% | 140k free | +200/-50 | 45m | cache→14:32 | 5h: 80% (3h) | 7d: 55% (4d)
 ```
 
 In a git worktree, on a GitLab remote:
@@ -92,15 +94,33 @@ my-repo:main | [abc1234] Last commit message
 [⣿⣿⣤⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀] 10% | 900k free | +42/-10 | 1h 30m | 5h: 80% (3h) | 7d: 55% (4d)
 ```
 
-- **Line 1** (session): Sandbox indicator (`sbx[vm-id]` when running inside an agent sandbox, detected via `SANDBOX_VM_ID`/`IS_SANDBOX`), model, output style, reasoning effort, fast mode, agent, working directory (`~` for home, left-truncated when long)
-- **Line 2** (git): Repo, branch, dirty/ahead/behind, pull request, commit hash + message, worktree — skipped outside git repos
-- **Line 3** (metrics): Context bar, percentage (with `!` warning above 200k tokens), free tokens, lines changed, duration, cost (API) or rate limits with reset countdown (subscribers)
+- **Line 1** (session): Sandbox indicator (`sbx[vm-id]` when running inside an agent sandbox, detected via `SANDBOX_VM_ID`/`IS_SANDBOX`), vim mode, model, output style, reasoning effort, fast mode, agent, session name, working directory (`~` for home, left-truncated to fit)
+- **Line 2** (git): Repo (linked to its web page), branch, dirty/ahead/behind, pull request (linked), commit hash + message, worktree — skipped outside git repos
+- **Line 3** (metrics): Context bar, percentage (with `!` warning above 200k tokens), free tokens, lines changed, duration, prompt cache, cost (API) or rate limits with reset countdown (subscribers), spend limit (Claude apps gateway)
+
+The session name, directory and commit message are sized to the terminal width Claude Code passes in `COLUMNS`: the session name gives way before the directory, and the commit message is dropped when there's no room. Without `COLUMNS` they fall back to fixed limits. Repo and PR links use OSC 8 hyperlinks (Cmd/Ctrl+click) in terminals that support them.
+
+Claude Code re-renders the statusline and strips these links when it doesn't detect hyperlink support, even if the terminal has it. This happens inside multiplexers that set their own `TERM_PROGRAM`, such as [herdr](https://github.com/herdrdev/herdr/issues/4748). Its own footer links can still work in fullscreen mode, so their being clickable doesn't mean statusline links will be. Set `FORCE_HYPERLINK=1` before starting Claude Code to override the detection, e.g. in fish:
+
+```fish
+if status --is-interactive; and test "$TERM_PROGRAM" = herdr
+  set -gx FORCE_HYPERLINK 1
+end
+```
 
 ### Model chip
 
 The bracketed chip reads `[model:style:effort]`. The output style is omitted when it is `default`, and the [reasoning effort](https://code.claude.com/docs/en/statusline#available-data) (`low`, `medium`, `high`, `xhigh`, `max`) is omitted for models without an effort parameter — so a plain session shows just `[Opus 4.6]`. Effort tracks mid-session `/effort` changes; ultracode reports as `xhigh`.
 
 A yellow `fast` marker follows the chip while fast mode is enabled.
+
+### Prompt cache
+
+`cache→14:32` shows when the [prompt cache](https://code.claude.com/docs/en/prompt-caching) goes cold — a clock time rather than a countdown, because the statusline only re-runs on events and a countdown would freeze while the session is idle. It turns yellow in the last five minutes and becomes a dim `cache cold` once expired; Claude Code re-runs the statusline at expiry. On a subscription the main conversation gets a one-hour cache, so this tells you whether a break will make the next turn reprocess the whole conversation. The segment is hidden when the provider reports no caching.
+
+### Spend limit
+
+Behind a [Claude apps gateway](https://code.claude.com/docs/en/claude-apps-gateway-spend-limits), `spend: 60% (12d)` shows the remaining spend limit and when it resets, or `spend: 5% over` once exceeded. The session cost stays visible next to it.
 
 ### Pull requests
 
@@ -116,6 +136,8 @@ When Claude Code finds an open pull request for the current branch, it appears a
 On a GitLab remote the same segment describes the branch's open [merge request](https://code.claude.com/docs/en/interactive-mode#gitlab-merge-requests) and uses GitLab's `MR!42` notation.
 
 ### Worktrees
+
+The repo name comes from the `origin` remote as reported by Claude Code, so it stays correct inside worktrees; without a remote it falls back to the repository directory name.
 
 Inside a linked git worktree the line ends with `wt:<name>`, using the worktree name reported by Claude Code. Older versions that do not report it fall back to a bare `wt`, detected from the git directory.
 

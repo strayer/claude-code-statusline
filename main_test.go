@@ -141,13 +141,13 @@ var testNow = time.Unix(1738400000, 0)
 
 func render(input Input, git GitInfo) string {
 	var buf bytes.Buffer
-	renderOutput(&buf, input, git, testNow, "/home/user", "")
+	renderOutput(&buf, input, git, testNow, "/home/user", "", 0)
 	return buf.String()
 }
 
 func renderSandbox(input Input, git GitInfo, sandbox string) string {
 	var buf bytes.Buffer
-	renderOutput(&buf, input, git, testNow, "/home/user", sandbox)
+	renderOutput(&buf, input, git, testNow, "/home/user", sandbox, 0)
 	return buf.String()
 }
 
@@ -694,7 +694,7 @@ func TestShortenPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := shortenPath(tt.dir, tt.homeDir)
+			got := shortenPath(tt.dir, tt.homeDir, defaultPathLen)
 			if got != tt.want {
 				t.Errorf("shortenPath(%q, %q) = %q, want %q", tt.dir, tt.homeDir, got, tt.want)
 			}
@@ -787,5 +787,318 @@ func TestTruncateCommitMessage(t *testing.T) {
 				t.Errorf("truncateCommitMessage(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func renderCols(input Input, git GitInfo, cols int) string {
+	var buf bytes.Buffer
+	renderOutput(&buf, input, git, testNow, "/home/user", "", cols)
+	return buf.String()
+}
+
+func TestSpendLimit(t *testing.T) {
+	t.Run("spend limit alone keeps cost", func(t *testing.T) {
+		in := defaultInput()
+		in.Cost.TotalCostUSD = 2.25
+		in.RateLimits = &RateLimits{
+			SpendLimit: &RateWindow{UsedPercentage: 40, ResetsAt: testNow.Unix() + 12*86400},
+		}
+		out := render(in, GitInfo{})
+
+		if !strings.Contains(out, "$2.25") {
+			t.Errorf("expected cost alongside spend limit, got: %q", out)
+		}
+		if !strings.Contains(out, "spend: ") || !strings.Contains(out, "60%") || !strings.Contains(out, "(12d)") {
+			t.Errorf("expected spend: 60%% (12d), got: %q", out)
+		}
+	})
+
+	t.Run("spend limit overrun", func(t *testing.T) {
+		in := defaultInput()
+		in.RateLimits = &RateLimits{SpendLimit: &RateWindow{UsedPercentage: 112}}
+		out := render(in, GitInfo{})
+
+		if !strings.Contains(out, "12% over") {
+			t.Errorf("expected overrun shown, got: %q", out)
+		}
+	})
+
+	t.Run("subscriber windows still hide cost", func(t *testing.T) {
+		in := defaultInput()
+		in.Cost.TotalCostUSD = 2.25
+		in.RateLimits = &RateLimits{
+			FiveHour:   &RateWindow{UsedPercentage: 10},
+			SpendLimit: &RateWindow{UsedPercentage: 10},
+		}
+		out := render(in, GitInfo{})
+
+		if strings.Contains(out, "$") {
+			t.Errorf("expected no cost for subscriber, got: %q", out)
+		}
+	})
+}
+
+func TestPromptCache(t *testing.T) {
+	t.Run("absent shows nothing", func(t *testing.T) {
+		if out := render(defaultInput(), GitInfo{}); strings.Contains(out, "cache") {
+			t.Errorf("expected no cache segment, got: %q", out)
+		}
+	})
+
+	t.Run("caching never observed shows nothing", func(t *testing.T) {
+		in := defaultInput()
+		in.PromptCache = &PromptCache{}
+		if out := render(in, GitInfo{}); strings.Contains(out, "cache") {
+			t.Errorf("expected no cache segment, got: %q", out)
+		}
+	})
+
+	t.Run("warm shows expiry clock time", func(t *testing.T) {
+		in := defaultInput()
+		exp := testNow.Unix() + 23*60
+		in.PromptCache = &PromptCache{Warm: true, CachingObserved: true, ExpiresAt: exp}
+		out := render(in, GitInfo{})
+
+		want := greenDim + "cache→" + time.Unix(exp, 0).Local().Format("15:04")
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q, got: %q", want, out)
+		}
+	})
+
+	t.Run("warm close to expiry is yellow", func(t *testing.T) {
+		in := defaultInput()
+		in.PromptCache = &PromptCache{Warm: true, CachingObserved: true, ExpiresAt: testNow.Unix() + 120}
+		if out := render(in, GitInfo{}); !strings.Contains(out, yellowDim+"cache→") {
+			t.Errorf("expected yellow cache segment, got: %q", out)
+		}
+	})
+
+	t.Run("cold", func(t *testing.T) {
+		in := defaultInput()
+		in.PromptCache = &PromptCache{CachingObserved: true}
+		if out := render(in, GitInfo{}); !strings.Contains(out, "cache cold") {
+			t.Errorf("expected cache cold, got: %q", out)
+		}
+	})
+
+	t.Run("expired but still flagged warm is cold", func(t *testing.T) {
+		in := defaultInput()
+		in.PromptCache = &PromptCache{Warm: true, CachingObserved: true, ExpiresAt: testNow.Unix() - 1}
+		if out := render(in, GitInfo{}); !strings.Contains(out, "cache cold") {
+			t.Errorf("expected cache cold, got: %q", out)
+		}
+	})
+}
+
+func TestRepoIdentity(t *testing.T) {
+	t.Run("workspace repo name preferred over toplevel basename", func(t *testing.T) {
+		in := defaultInput()
+		in.Workspace.Repo = RepoInfo{Host: "github.com", Owner: "strayer", Name: "claude-code-statusline"}
+		out := render(in, GitInfo{RepoName: "feature-xyz", Branch: "main"})
+
+		line2 := strings.Split(out, "\n")[1]
+		if !strings.Contains(line2, "claude-code-statusline") || strings.Contains(line2, "feature-xyz") {
+			t.Errorf("expected repo name from workspace, got: %q", line2)
+		}
+		if !strings.Contains(line2, hyperlink("https://github.com/strayer/claude-code-statusline", "claude-code-statusline")) {
+			t.Errorf("expected repo hyperlink, got: %q", line2)
+		}
+	})
+
+	t.Run("falls back to git basename without link", func(t *testing.T) {
+		out := render(defaultInput(), GitInfo{RepoName: "myrepo", Branch: "main"})
+		if !strings.Contains(out, "myrepo") || strings.Contains(out, "\033]8") {
+			t.Errorf("expected plain repo name, got: %q", out)
+		}
+	})
+
+	t.Run("pr linked", func(t *testing.T) {
+		in := defaultInput()
+		in.PR = &PRInfo{Number: 13, URL: "https://github.com/o/r/pull/13"}
+		out := render(in, GitInfo{Branch: "main"})
+		if !strings.Contains(out, hyperlink("https://github.com/o/r/pull/13", "PR#13")) {
+			t.Errorf("expected PR hyperlink, got: %q", out)
+		}
+	})
+
+	t.Run("link ends in BEL", func(t *testing.T) {
+		if got, want := hyperlink("https://x", "t"), "\033]8;;https://x\at\033]8;;\a"; got != want {
+			t.Errorf("hyperlink = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("control characters in url drop the link", func(t *testing.T) {
+		if got := hyperlink("https://x\033]evil", "PR#1"); got != "PR#1" {
+			t.Errorf("expected plain text, got: %q", got)
+		}
+	})
+}
+
+func TestSessionAndVim(t *testing.T) {
+	t.Run("session name before dir", func(t *testing.T) {
+		in := defaultInput()
+		in.SessionName = "fix flaky tests"
+		in.Workspace.CurrentDir = "/home/user/p"
+		line1 := strings.Split(render(in, GitInfo{}), "\n")[0]
+		nameIdx, dirIdx := strings.Index(line1, "fix flaky tests"), strings.Index(line1, "~/p")
+		if nameIdx < 0 || dirIdx < 0 || nameIdx > dirIdx {
+			t.Errorf("expected session name before dir, got: %q", line1)
+		}
+	})
+
+	t.Run("long session name truncated without width", func(t *testing.T) {
+		in := defaultInput()
+		in.SessionName = strings.Repeat("x", 50)
+		out := render(in, GitInfo{})
+		if !strings.Contains(out, strings.Repeat("x", 39)+"…") || strings.Contains(out, strings.Repeat("x", 40)) {
+			t.Errorf("expected name truncated to 40, got: %q", out)
+		}
+	})
+
+	t.Run("session name uses available width", func(t *testing.T) {
+		in := defaultInput()
+		in.SessionName = strings.Repeat("x", 80)
+		in.Workspace.CurrentDir = "/home/user/dev/project"
+		out := renderCols(in, GitInfo{}, 200)
+		if !strings.Contains(out, in.SessionName) || !strings.Contains(out, "~/dev/project") {
+			t.Errorf("expected full name and path on a wide terminal, got: %q", out)
+		}
+	})
+
+	t.Run("session name gives way before the path", func(t *testing.T) {
+		in := defaultInput()
+		in.SessionName = strings.Repeat("x", 80)
+		in.Workspace.CurrentDir = "/home/user/dev/project"
+		line1 := strings.Split(renderCols(in, GitInfo{}, 80), "\n")[0]
+		if !strings.Contains(line1, "~/dev/project") || !strings.Contains(line1, "…") {
+			t.Errorf("expected truncated name and full path, got: %q", line1)
+		}
+		if w := visibleWidth(line1); w > 80-widthReserve {
+			t.Errorf("line width %d exceeds %d: %q", w, 80-widthReserve, line1)
+		}
+	})
+
+	t.Run("vim mode leads the line", func(t *testing.T) {
+		in := defaultInput()
+		in.Vim.Mode = "INSERT"
+		out := render(in, GitInfo{})
+		if !strings.HasPrefix(out, green+"INSERT"+reset+" | ") {
+			t.Errorf("expected INSERT first, got: %q", out)
+		}
+	})
+}
+
+func TestVisibleWidth(t *testing.T) {
+	tests := []struct {
+		in   string
+		want int
+	}{
+		{"plain", 5},
+		{green + "abc" + reset, 3},
+		{hyperlink("https://example.com", "PR#13"), 5},
+		{"⣿⣤…", 3},
+		{"\033]8;;u\atext\033]8;;\a", 4},
+		{"日本語", 6},
+		{"fix 🐛 bug", 10},
+		{"cafe\u0301", 4}, // e + combining acute
+		{"👍\ufe0f", 2},    // emoji + variation selector
+	}
+	for _, tt := range tests {
+		if got := visibleWidth(tt.in); got != tt.want {
+			t.Errorf("visibleWidth(%q) = %d, want %d", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestColumnsFit(t *testing.T) {
+	in := defaultInput()
+	in.Workspace.CurrentDir = "/home/user/" + strings.Repeat("deep/", 20) + "project"
+	git := GitInfo{
+		RepoName:      "repo",
+		Branch:        "main",
+		ShortHash:     "abc1234",
+		CommitMessage: strings.Repeat("word ", 14),
+	}
+
+	t.Run("lines fit the terminal", func(t *testing.T) {
+		const cols = 60
+		for _, l := range strings.Split(strings.TrimSuffix(renderCols(in, git, cols), "\n"), "\n")[:2] {
+			if w := visibleWidth(l); w > cols-widthReserve {
+				t.Errorf("line width %d exceeds %d: %q", w, cols-widthReserve, l)
+			}
+		}
+	})
+
+	t.Run("wide terminal shows full path", func(t *testing.T) {
+		out := renderCols(in, git, 300)
+		if !strings.Contains(out, "~/deep/") {
+			t.Errorf("expected untruncated path, got: %q", out)
+		}
+	})
+
+	t.Run("narrow terminal drops the commit message", func(t *testing.T) {
+		line2 := strings.Split(renderCols(in, git, 30), "\n")[1]
+		if strings.Contains(line2, "word") {
+			t.Errorf("expected message dropped, got: %q", line2)
+		}
+	})
+
+	t.Run("unknown width keeps fixed limits", func(t *testing.T) {
+		out := renderCols(in, git, 0)
+		if !strings.Contains(out, "…/") || !strings.Contains(out, strings.TrimSpace(git.CommitMessage)) {
+			t.Errorf("expected fixed-length path and full message, got: %q", out)
+		}
+	})
+}
+
+func TestTruncateWidth(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		n    int
+		want string
+	}{
+		{"fits", "abc", 3, "abc"},
+		{"ascii cut", "abcdef", 4, "abc…"},
+		{"wide cut stays within budget", "日本語テキスト", 6, "日本…"},
+		{"wide char not split", "a日本", 3, "a…"},
+		{"combining mark kept with base", "cafe\u0301s", 5, "cafe\u0301s"},
+		{"emoji", "🐛🐛🐛", 5, "🐛🐛…"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncateWidth(tt.in, tt.n)
+			if got != tt.want {
+				t.Errorf("truncateWidth(%q, %d) = %q, want %q", tt.in, tt.n, got, tt.want)
+			}
+			if w := visibleWidth(got); w > tt.n {
+				t.Errorf("width %d exceeds %d: %q", w, tt.n, got)
+			}
+		})
+	}
+}
+
+func TestWideCharactersFit(t *testing.T) {
+	in := defaultInput()
+	in.SessionName = strings.Repeat("会話", 20)
+	in.Workspace.CurrentDir = "/home/user/プロジェクト/" + strings.Repeat("ディレクトリ/", 8) + "src"
+	git := GitInfo{
+		RepoName:      "repo",
+		Branch:        "main",
+		ShortHash:     "abc1234",
+		CommitMessage: strings.Repeat("🐛 修正 ", 12),
+	}
+
+	for _, cols := range []int{50, 80, 120} {
+		lines := strings.Split(renderCols(in, git, cols), "\n")[:2]
+		for _, l := range lines {
+			if w := visibleWidth(l); w > cols-widthReserve {
+				t.Errorf("cols=%d: line width %d exceeds %d: %q", cols, w, cols-widthReserve, l)
+			}
+		}
+	}
+
+	if got := shortenPath("/opt/日本語/日本語/日本語", "", 10); visibleWidth(got) > 10 {
+		t.Errorf("shortenPath width %d exceeds 10: %q", visibleWidth(got), got)
 	}
 }

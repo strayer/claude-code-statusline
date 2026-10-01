@@ -10,9 +10,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // JSON input structs matching the Claude Code statusline schema
@@ -27,13 +30,33 @@ type Input struct {
 	Effort        EffortInfo    `json:"effort"`
 	PR            *PRInfo       `json:"pr"`
 	RateLimits    *RateLimits   `json:"rate_limits"`
+	PromptCache   *PromptCache  `json:"prompt_cache"`
+	Vim           VimInfo       `json:"vim"`
+	SessionName   string        `json:"session_name"`
 	Exceeds200k   bool          `json:"exceeds_200k_tokens"`
 	FastMode      bool          `json:"fast_mode"`
 }
 
+// RateLimits holds the subscription windows and, behind a Claude apps gateway,
+// the spend limit. Any of them may be absent.
 type RateLimits struct {
-	FiveHour *RateWindow `json:"five_hour"`
-	SevenDay *RateWindow `json:"seven_day"`
+	FiveHour   *RateWindow `json:"five_hour"`
+	SevenDay   *RateWindow `json:"seven_day"`
+	SpendLimit *RateWindow `json:"spend_limit"`
+}
+
+// PromptCache summarizes the main conversation's prompt cache. ExpiresAt is
+// zero (null in the JSON) when the last response reported no cache tokens.
+type PromptCache struct {
+	Warm            bool  `json:"warm"`
+	CachingObserved bool  `json:"caching_observed"`
+	ExpiresAt       int64 `json:"expires_at"`
+}
+
+// VimInfo carries the vim mode (NORMAL, INSERT, VISUAL, VISUAL LINE), absent
+// unless vim mode is enabled.
+type VimInfo struct {
+	Mode string `json:"mode"`
 }
 
 type RateWindow struct {
@@ -49,6 +72,25 @@ type WorkspaceInfo struct {
 	CurrentDir string `json:"current_dir"`
 	// GitWorktree is the worktree name, absent in the main working tree.
 	GitWorktree string `json:"git_worktree"`
+	// Repo is parsed from the origin remote, absent without one.
+	Repo RepoInfo `json:"repo"`
+}
+
+// RepoInfo identifies the repository, e.g. github.com / anthropics / claude-code.
+// For nested GitLab groups Owner is the full namespace path.
+type RepoInfo struct {
+	Host  string `json:"host"`
+	Owner string `json:"owner"`
+	Name  string `json:"name"`
+}
+
+// webURL returns the repository's web page, or "" when the identity is
+// incomplete.
+func (r RepoInfo) webURL() string {
+	if r.Host == "" || r.Owner == "" || r.Name == "" {
+		return ""
+	}
+	return "https://" + r.Host + "/" + r.Owner + "/" + r.Name
 }
 
 type CostInfo struct {
@@ -84,6 +126,7 @@ type PRInfo struct {
 	Number      int    `json:"number"`
 	ReviewState string `json:"review_state"`
 	Kind        string `json:"kind"`
+	URL         string `json:"url"`
 }
 
 // Git info collected from parallel commands
@@ -128,7 +171,10 @@ func main() {
 
 	homeDir, _ := os.UserHomeDir()
 	gitInfo := collectGitInfo(input.Workspace.CurrentDir)
-	renderOutput(os.Stdout, input, gitInfo, time.Now(), homeDir, detectSandbox())
+	// Claude Code captures stdout, so the terminal width only reaches us via
+	// COLUMNS. Zero means unknown and falls back to fixed limits.
+	cols, _ := strconv.Atoi(os.Getenv("COLUMNS"))
+	renderOutput(os.Stdout, input, gitInfo, time.Now(), homeDir, detectSandbox(), cols)
 }
 
 // detectSandbox returns a label when running inside an agent sandbox
@@ -278,7 +324,12 @@ func isHexString(s string) bool {
 	return true
 }
 
-func shortenPath(dir, homeDir string) string {
+// defaultPathLen caps the directory when the terminal width is unknown.
+const defaultPathLen = 50
+
+// shortenPath replaces the home directory with ~ and truncates from the left,
+// at a slash boundary where possible, to at most maxLen characters.
+func shortenPath(dir, homeDir string, maxLen int) string {
 	// Normalize to forward slashes for display (Windows compat)
 	dir = filepath.ToSlash(dir)
 	homeDir = filepath.ToSlash(homeDir)
@@ -288,26 +339,194 @@ func shortenPath(dir, homeDir string) string {
 		dir = "~" + dir[len(homeDir):]
 	}
 
-	// Truncate from the left if too long
-	const maxLen = 50
-	if len(dir) > maxLen {
-		// Find a slash boundary to cut at
-		cut := dir[len(dir)-maxLen:]
-		if i := strings.Index(cut, "/"); i >= 0 {
-			dir = "…" + cut[i:]
-		} else {
-			dir = "…" + cut
-		}
+	if visibleWidth(dir) <= maxLen {
+		return dir
 	}
-
-	return dir
+	// Keep the tail that fits in maxLen-1 columns, leaving room for the
+	// ellipsis.
+	room := max(maxLen-1, 1)
+	start := len(dir)
+	for start > 0 {
+		r, size := utf8.DecodeLastRuneInString(dir[:start])
+		w := runeWidth(r)
+		if w > room {
+			break
+		}
+		room -= w
+		start -= size
+	}
+	cut := dir[start:]
+	if i := strings.Index(cut, "/"); i >= 0 {
+		return "…" + cut[i:]
+	}
+	return "…" + cut
 }
 
-func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir, sandbox string) {
+// truncateWidth shortens s to at most n terminal columns, ellipsis included.
+func truncateWidth(s string, n int) string {
+	if visibleWidth(s) <= n {
+		return s
+	}
+	room := max(n-1, 0)
+	end := 0
+	for end < len(s) {
+		r, size := utf8.DecodeRuneInString(s[end:])
+		w := runeWidth(r)
+		if w > room {
+			break
+		}
+		room -= w
+		end += size
+	}
+	return s[:end] + "…"
+}
 
-	// ── Line 1: sbx[id] | [Model:style:effort] | fast | @agent | dir ──
+// wideRanges lists the East Asian Wide/Fullwidth blocks and the emoji blocks,
+// which terminals draw two columns wide. Approximate on purpose: it covers
+// what turns up in session names, paths and commit messages without pulling
+// in a full Unicode width table.
+var wideRanges = [][2]rune{
+	{0x1100, 0x115F},   // Hangul Jamo
+	{0x231A, 0x231B},   // watch, hourglass
+	{0x23E9, 0x23F3},   // media control emoji
+	{0x25FD, 0x25FE},   // small squares
+	{0x2614, 0x2615},   // umbrella, hot beverage
+	{0x2648, 0x2653},   // zodiac
+	{0x26A1, 0x26A1},   // high voltage
+	{0x26AA, 0x26AB},   // circles
+	{0x26BD, 0x26BE},   // soccer, baseball
+	{0x26C4, 0x26C5},   // snowman, sun behind cloud
+	{0x26D4, 0x26D4},   // no entry
+	{0x26EA, 0x26EA},   // church
+	{0x26F2, 0x26F5},   // fountain … sailboat
+	{0x26FA, 0x26FD},   // tent … fuel pump
+	{0x2705, 0x2705},   // check mark button
+	{0x270A, 0x270B},   // raised fist, hand
+	{0x2728, 0x2728},   // sparkles
+	{0x274C, 0x274C},   // cross mark
+	{0x2753, 0x2757},   // question/exclamation marks
+	{0x2795, 0x2797},   // plus, minus, divide
+	{0x27B0, 0x27B0},   // curly loop
+	{0x2B1B, 0x2B1C},   // large squares
+	{0x2B50, 0x2B50},   // star
+	{0x2E80, 0x303E},   // CJK radicals, punctuation
+	{0x3041, 0x33FF},   // Hiragana, Katakana, CJK compatibility
+	{0x3400, 0x4DBF},   // CJK extension A
+	{0x4E00, 0x9FFF},   // CJK unified ideographs
+	{0xA000, 0xA4CF},   // Yi
+	{0xAC00, 0xD7A3},   // Hangul syllables
+	{0xF900, 0xFAFF},   // CJK compatibility ideographs
+	{0xFE30, 0xFE4F},   // CJK compatibility forms
+	{0xFF00, 0xFF60},   // fullwidth forms
+	{0xFFE0, 0xFFE6},   // fullwidth signs
+	{0x1F004, 0x1F004}, // mahjong
+	{0x1F0CF, 0x1F0CF}, // joker
+	{0x1F18E, 0x1F18E}, // AB button
+	{0x1F191, 0x1F19A}, // squared words
+	{0x1F200, 0x1F251}, // enclosed ideographic supplement
+	{0x1F300, 0x1F64F}, // pictographs, emoticons
+	{0x1F680, 0x1F6FF}, // transport and map
+	{0x1F7E0, 0x1F7EB}, // colored circles and squares
+	{0x1F90C, 0x1F9FF}, // supplemental symbols and pictographs
+	{0x1FA70, 0x1FAFF}, // symbols and pictographs extended-A
+	{0x20000, 0x3FFFD}, // CJK extensions B and beyond
+}
+
+// runeWidth returns the terminal columns r occupies: 0 for combining and
+// format characters (accents, zero-width joiner, variation selectors), 2 for
+// wide characters, 1 otherwise.
+func runeWidth(r rune) int {
+	if unicode.In(r, unicode.Mn, unicode.Me, unicode.Cf) {
+		return 0
+	}
+	for _, rg := range wideRanges {
+		if r < rg[0] {
+			break
+		}
+		if r <= rg[1] {
+			return 2
+		}
+	}
+	return 1
+}
+
+// hyperlink wraps text in an OSC 8 link. Terminals without link support show
+// the text alone. The sequences end in BEL rather than ST (ESC \\): Claude Code
+// re-renders the statusline and drops ST-terminated links.
+func hyperlink(url, text string) string {
+	if url == "" || strings.ContainsFunc(url, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return text
+	}
+	return "\033]8;;" + url + "\a" + text + "\033]8;;\a"
+}
+
+// visibleWidth counts the terminal columns s occupies, skipping ANSI color
+// (CSI) and OSC hyperlink sequences.
+func visibleWidth(s string) int {
+	n := 0
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b && i+1 < len(s) {
+			switch s[i+1] {
+			case '[': // CSI: ends at a final byte in @–~
+				j := i + 2
+				for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
+					j++
+				}
+				i = j + 1
+				continue
+			case ']': // OSC: ends at ST (ESC \) or BEL
+				j := i + 2
+				for j < len(s) && s[j] != 0x07 && (s[j] != 0x1b || j+1 >= len(s) || s[j+1] != '\\') {
+					j++
+				}
+				if j < len(s) && s[j] == 0x1b {
+					j++
+				}
+				i = j + 1
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+		n += runeWidth(r)
+	}
+	return n
+}
+
+// widthReserve keeps output clear of the terminal edge and Claude Code's own
+// row padding, so width-sized lines don't wrap.
+const widthReserve = 4
+
+// budget returns the characters left on a line of width cols after used, or -1
+// when the width is unknown.
+func budget(cols, used int) int {
+	if cols <= 0 {
+		return -1
+	}
+	return cols - widthReserve - used
+}
+
+func vimModeColor(mode string) string {
+	switch mode {
+	case "INSERT":
+		return green
+	case "NORMAL":
+		return blue
+	default: // VISUAL, VISUAL LINE
+		return magenta
+	}
+}
+
+func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir, sandbox string, cols int) {
+
+	// ── Line 1: sbx[id] | MODE | [Model:style:effort] | fast | @agent | name | dir ──
+	var line strings.Builder
 	if sandbox != "" {
-		fmt.Fprint(w, yellow+sandbox+reset+" | ")
+		line.WriteString(yellow + sandbox + reset + " | ")
+	}
+
+	if mode := input.Vim.Mode; mode != "" {
+		line.WriteString(vimModeColor(mode) + mode + reset + " | ")
 	}
 
 	chip := strings.TrimPrefix(input.Model.DisplayName, "Claude ")
@@ -317,32 +536,56 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 	if input.Effort.Level != "" {
 		chip += ":" + input.Effort.Level
 	}
-	fmt.Fprintf(w, cyan+"[%s]"+reset, chip)
+	fmt.Fprintf(&line, cyan+"[%s]"+reset, chip)
 
 	if input.FastMode {
-		fmt.Fprint(w, " | "+yellow+"fast"+reset)
+		line.WriteString(" | " + yellow + "fast" + reset)
 	}
 
 	if input.Agent.Name != "" {
-		fmt.Fprintf(w, " | "+magenta+"@%s"+reset, input.Agent.Name)
+		fmt.Fprintf(&line, " | "+magenta+"@%s"+reset, input.Agent.Name)
+	}
+
+	// The session name takes the room the directory leaves at its default
+	// length; the directory only shrinks once the name is at its minimum.
+	if name := input.SessionName; name != "" {
+		const defaultNameLen, minNameLen = 40, 16
+		maxLen := defaultNameLen
+		if b := budget(cols, visibleWidth(line.String())+len(" | ")); b >= 0 {
+			if dir := input.Workspace.CurrentDir; dir != "" {
+				b -= len(" | ") + visibleWidth(shortenPath(dir, homeDir, defaultPathLen))
+			}
+			maxLen = max(b, minNameLen)
+		}
+		line.WriteString(" | " + bold + truncateWidth(name, maxLen) + reset)
 	}
 
 	if dir := input.Workspace.CurrentDir; dir != "" {
-		fmt.Fprintf(w, " | %s", shortenPath(dir, homeDir))
+		maxLen := defaultPathLen
+		if b := budget(cols, visibleWidth(line.String())+len(" | ")); b >= 0 {
+			// Never squeeze the path below a recognizable tail.
+			maxLen = max(b, 12)
+		}
+		line.WriteString(" | " + shortenPath(dir, homeDir, maxLen))
 	}
 
-	fmt.Fprintln(w)
+	fmt.Fprintln(w, line.String())
 
 	// ── Line 2: repo:branch status | PR#n | [hash] message | wt ──
-	if git.RepoName != "" || git.Branch != "" {
-		if git.RepoName != "" {
-			fmt.Fprint(w, green+git.RepoName+reset)
+	repoName := input.Workspace.Repo.Name
+	if repoName == "" {
+		repoName = git.RepoName
+	}
+	if repoName != "" || git.Branch != "" {
+		line.Reset()
+		if repoName != "" {
+			line.WriteString(green + hyperlink(input.Workspace.Repo.webURL(), repoName) + reset)
 		}
 		if git.Branch != "" {
-			if git.RepoName != "" {
-				fmt.Fprint(w, ":")
+			if repoName != "" {
+				line.WriteString(":")
 			}
-			fmt.Fprintf(w, blue+"%s"+reset, git.Branch)
+			line.WriteString(blue + git.Branch + reset)
 		}
 
 		gitStatus := ""
@@ -356,27 +599,36 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 			gitStatus += "↓" + git.Behind
 		}
 		if gitStatus != "" {
-			fmt.Fprint(w, " "+red+gitStatus+reset)
+			line.WriteString(" " + red + gitStatus + reset)
 		}
 
-		renderPR(w, input.PR)
-
-		if git.ShortHash != "" {
-			fmt.Fprint(w, " | "+dim+"["+reset+yellowDim+git.ShortHash+reset+dim+"]"+reset)
-			if git.CommitMessage != "" {
-				fmt.Fprintf(w, " %s", git.CommitMessage)
-			}
-		}
+		renderPR(&line, input.PR)
 
 		// Claude Code reports the worktree name for any linked worktree; the
 		// git-dir probe is the fallback for versions that omit the field.
+		suffix := ""
 		if wt := input.Workspace.GitWorktree; wt != "" {
-			fmt.Fprint(w, " | "+yellow+"wt:"+wt+reset)
+			suffix = " | " + yellow + "wt:" + wt + reset
 		} else if git.IsWorktree {
-			fmt.Fprint(w, " | "+yellow+"wt"+reset)
+			suffix = " | " + yellow + "wt" + reset
 		}
 
-		fmt.Fprintln(w)
+		if git.ShortHash != "" {
+			line.WriteString(" | " + dim + "[" + reset + yellowDim + git.ShortHash + reset + dim + "]" + reset)
+			if msg := git.CommitMessage; msg != "" {
+				b := budget(cols, visibleWidth(line.String())+visibleWidth(suffix)+1)
+				const minMessageLen = 10
+				switch {
+				case b < 0:
+					line.WriteString(" " + msg)
+				case b >= minMessageLen:
+					line.WriteString(" " + truncateWidth(msg, b))
+				}
+			}
+		}
+
+		line.WriteString(suffix)
+		fmt.Fprintln(w, line.String())
 	}
 
 	// ── Line 3: [braille bar] pct% | Nk free | +N/-N | Xh Ym | $cost ──
@@ -438,10 +690,17 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 		}
 	}
 
-	if input.RateLimits != nil {
-		renderRateLimits(w, input.RateLimits, now)
-	} else if input.Cost.TotalCostUSD > 0 {
+	renderPromptCache(w, input.PromptCache, now)
+
+	// Subscribers see plan windows instead of an estimated cost. A gateway
+	// spend limit alone does not replace the cost.
+	rl := input.RateLimits
+	subscriber := rl != nil && (rl.FiveHour != nil || rl.SevenDay != nil)
+	if !subscriber && input.Cost.TotalCostUSD > 0 {
 		fmt.Fprintf(w, " | "+yellowDim+"$%.2f"+reset, input.Cost.TotalCostUSD)
+	}
+	if rl != nil {
+		renderRateLimits(w, rl, now)
 	}
 
 	fmt.Fprintln(w)
@@ -470,7 +729,27 @@ func renderPR(w io.Writer, pr *PRInfo) {
 		color, marker = dim, " draft"
 	}
 
-	fmt.Fprintf(w, " | %s%s%s%s", color, label, marker, reset)
+	fmt.Fprintf(w, " | %s%s%s%s", color, hyperlink(pr.URL, label), marker, reset)
+}
+
+// renderPromptCache shows when a warm cache goes cold. The statusline only
+// re-runs on events, so it shows the expiry as a clock time rather than a
+// countdown that would freeze while the session is idle. Claude Code re-runs
+// it at expiry, which flips the segment to cold.
+func renderPromptCache(w io.Writer, pc *PromptCache, now time.Time) {
+	if pc == nil || !pc.CachingObserved {
+		return
+	}
+	if pc.Warm && pc.ExpiresAt > now.Unix() {
+		expires := time.Unix(pc.ExpiresAt, 0)
+		color := greenDim
+		if expires.Sub(now) <= 5*time.Minute {
+			color = yellowDim
+		}
+		fmt.Fprintf(w, " | %scache→%s%s", color, expires.Local().Format("15:04"), reset)
+		return
+	}
+	fmt.Fprint(w, " | "+dim+"cache cold"+reset)
 }
 
 func renderRateLimits(w io.Writer, rl *RateLimits, now time.Time) {
@@ -480,25 +759,27 @@ func renderRateLimits(w io.Writer, rl *RateLimits, now time.Time) {
 	if rl.SevenDay != nil {
 		fmt.Fprintf(w, " | 7d: %s", formatRateWindow(rl.SevenDay, now))
 	}
+	if rl.SpendLimit != nil {
+		fmt.Fprintf(w, " | spend: %s", formatRateWindow(rl.SpendLimit, now))
+	}
 }
 
+// formatRateWindow shows the remaining percentage and the time to reset. A
+// spend limit can run past 100%, which shows as the overrun instead.
 func formatRateWindow(rw *RateWindow, now time.Time) string {
 	remaining := 100 - rw.UsedPercentage
-	if remaining < 0 {
-		remaining = 0
-	}
 
-	var color string
+	var s string
 	switch {
+	case remaining < 0:
+		s = fmt.Sprintf("%s%.0f%% over%s", red, -remaining, reset)
 	case remaining <= 10:
-		color = red
+		s = fmt.Sprintf("%s%.0f%%%s", red, remaining, reset)
 	case remaining <= 30:
-		color = yellow
+		s = fmt.Sprintf("%s%.0f%%%s", yellow, remaining, reset)
 	default:
-		color = green
+		s = fmt.Sprintf("%s%.0f%%%s", green, remaining, reset)
 	}
-
-	s := fmt.Sprintf("%s%.0f%%%s", color, remaining, reset)
 
 	if rw.ResetsAt > 0 {
 		mins := int(rw.ResetsAt - now.Unix())
