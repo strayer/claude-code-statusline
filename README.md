@@ -151,7 +151,7 @@ Everything except the signature is automated by `mise run release`, which:
 2. Lists the PRs merged since the last final `v*` tag with their labels, and computes the next version from those labels (the same labels that group the release notes), highest bump wins:
    - `breaking` → major (minor while still on `0.x`)
    - `feature` / `enhancement` → minor
-   - anything else (`bug`, `dependencies`) → patch
+   - anything else (`bug`, `chore`, `dependencies`) → patch
 3. Proposes the version and waits for confirmation — accept it, type a different `vX.Y.Z` / `vX.Y.Z-rc.N`, or abort. Only then does it create the signed annotated tag and push it.
 
 Flags and arguments:
