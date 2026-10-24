@@ -148,13 +148,17 @@ Releases are cut by pushing a signed `v*` tag: the [release workflow](.github/wo
 Everything except the signature is automated by `mise run release`, which:
 
 1. Requires a clean `main` in sync with `origin/main`.
-2. Lists the PRs merged since the last `v*` tag with their labels, and computes the next version from those labels (the same labels that group the release notes), highest bump wins:
+2. Lists the PRs merged since the last final `v*` tag with their labels, and computes the next version from those labels (the same labels that group the release notes), highest bump wins:
    - `breaking` → major (minor while still on `0.x`)
    - `feature` / `enhancement` → minor
    - anything else (`bug`, `dependencies`) → patch
-3. Proposes the version and waits for confirmation — accept it, type a different `vX.Y.Z`, or abort. Only then does it create the signed annotated tag and push it.
+3. Proposes the version and waits for confirmation — accept it, type a different `vX.Y.Z` / `vX.Y.Z-rc.N`, or abort. Only then does it create the signed annotated tag and push it.
 
-Pass an explicit version to skip the computation: `mise run release -- v1.2.3`.
+Flags and arguments:
+
+- `--rc` proposes a release candidate of the next version (`v1.4.0-rc.1`, then `v1.4.0-rc.2`, ...). Tags containing `-rc` are published as GitHub pre-releases. A plain run afterwards releases the final version, with the bump computed against the last final tag.
+- `--dry-run` prints the PR list and proposed version without tagging or pushing.
+- An explicit version skips the computation: `mise run release -- v1.2.3` (or `v1.2.3-rc.1`).
 
 ## License
 
