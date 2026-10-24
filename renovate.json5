@@ -7,51 +7,24 @@
   ],
   "labels": ["dependencies"],
   "rangeStrategy": "pin",
-  "customManagers": [
-    {
-      // track `go install tool@version` lines in workflows so tool versions
-      // stay in sync with mise.toml
-      "customType": "regex",
-      "managerFilePatterns": ["/^\\.github\\/workflows\\/.+\\.ya?ml$/"],
-      "matchStrings": ["go install (?<depName>\\S+?)@(?<currentValue>v[\\d.]+)"],
-      "datasourceTemplate": "go"
-    }
-  ],
+  "automerge": true,
+  "automergeType": "pr",
+  "automergeStrategy": "squash",
+  "platformAutomerge": true,
   "packageRules": [
+    { "matchManagers": ["github-actions"], "groupName": "GitHub Actions" },
+    { "matchManagers": ["gomod"], "groupName": "Go dependencies" },
     {
-      "matchManagers": ["github-actions"],
-      "groupName": "GitHub Actions"
-    },
-    {
-      "matchManagers": ["gomod"],
-      "groupName": "Go dependencies"
-    },
-    {
-      "matchManagers": ["mise"],
-      "groupName": "mise tools"
-    },
-    {
-      // tools pinned in both mise.toml and ci.yml must update together,
-      // regardless of which manager found them (last rule wins)
-      "groupName": "Go dev tools",
-      "matchPackageNames": [
-        "golangci/golangci-lint",
-        "golangci-lint",
-        "/golang\\.org/x/tools/cmd/goimports$/",
-        "/golang\\.org/x/vuln/cmd/govulncheck$/"
-      ]
-    },
-    {
-      // the Go toolchain is pinned in both mise.toml and go.mod — update
-      // together so the go-version-sync CI check keeps passing
-      "groupName": "Go",
+      // Go toolchain and the dev tools built against it move together: a newer Go
+      // needs a golangci-lint built with it, and Go version sync needs all pins equal
+      "groupName": "Go toolchain",
       "matchDepNames": ["go", "golang"]
     },
+    { "groupName": "Go toolchain", "matchManagers": ["mise"] },
     {
       // without this the gomod manager never bumps the go directive
-      "matchManagers": ["gomod"],
-      "matchDepNames": ["go"],
-      "rangeStrategy": "bump"
-    }
+      "matchManagers": ["gomod"], "matchDepNames": ["go"], "rangeStrategy": "bump"
+    },
+    { "matchUpdateTypes": ["major"], "automerge": false }
   ]
 }
