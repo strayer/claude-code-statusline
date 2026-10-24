@@ -10,7 +10,7 @@ run = "goimports -w ."
 
 [tasks.test]
 description = "Run all tests"
-run = "go test -race ./..."
+run = "go test -race -cover ./..."
 
 [tasks.lint]
 description = "Run static checks"
