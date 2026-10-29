@@ -24,7 +24,15 @@ The original bash implementation spawns ~10 sequential git subprocesses and ~15 
 
 ## Installation
 
-Download the latest release for your platform (macOS arm64, Linux arm64/amd64, Windows amd64):
+With [Homebrew](https://brew.sh) on macOS or Linux:
+
+```sh
+brew install strayer/tap/claude-code-statusline
+```
+
+This installs the attested release binary for your platform (macOS arm64, Linux arm64/amd64) as `claude-statusline` on your `PATH`, so the `command` in the settings below becomes just `claude-statusline`.
+
+Or download the latest release for your platform (macOS arm64, Linux arm64/amd64, Windows amd64):
 
 ```sh
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
