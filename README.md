@@ -24,7 +24,19 @@ The original bash implementation spawns ~10 sequential git subprocesses and ~15 
 
 ## Installation
 
-Download the latest release for your platform (macOS arm64, Linux arm64/amd64, Windows amd64):
+With [Homebrew](https://brew.sh) on macOS or Linux:
+
+```sh
+brew install strayer/tap/claude-code-statusline
+```
+
+This installs the attested release binary for your platform (macOS arm64, Linux arm64/amd64) as `claude-statusline` on your `PATH`, so the `command` in the settings below becomes just `claude-statusline`. Claude Code runs the command with the `PATH` it was launched with, which lacks the Homebrew prefix when it starts outside a login shell; use `"$(brew --prefix)/bin/claude-statusline"` resolved to its absolute path, or prepend the prefix in the command itself:
+
+```json
+"command": "PATH=\"/opt/homebrew/bin:$PATH\" claude-statusline"
+```
+
+Or download the latest release for your platform (macOS arm64, Linux arm64/amd64, Windows amd64):
 
 ```sh
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
