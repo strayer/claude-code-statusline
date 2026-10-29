@@ -30,25 +30,7 @@ With [Homebrew](https://brew.sh) on macOS or Linux:
 brew install strayer/tap/claude-code-statusline
 ```
 
-This installs the attested release binary for your platform (macOS arm64, Linux arm64/amd64) as `claude-statusline` on your `PATH`, so the `command` in the settings below becomes just `claude-statusline`.
-
-Homebrew 6 [requires explicit trust](https://docs.brew.sh/Tap-Trust) for third-party taps, because loading a formula runs its Ruby code. Installing by the fully qualified name, as above, trusts only this formula, not the rest of the tap, and `brew upgrade` keeps working afterwards. To install by short name instead, trust the formula first:
-
-```sh
-brew tap strayer/tap
-brew trust --formula strayer/tap/claude-code-statusline
-brew install claude-code-statusline
-```
-
-In a `Brewfile`, the equivalent is:
-
-```ruby
-brew "strayer/tap/claude-code-statusline", trusted: true
-```
-
-`brew trust` lists what you have trusted, and `brew untrust --formula strayer/tap/claude-code-statusline` revokes it.
-
-Claude Code runs the command with the `PATH` it was launched with, which lacks the Homebrew prefix when it starts outside a login shell; use `"$(brew --prefix)/bin/claude-statusline"` resolved to its absolute path, or prepend the prefix in the command itself:
+This installs the attested release binary for your platform (macOS arm64, Linux arm64/amd64) as `claude-statusline` on your `PATH`, so the `command` in the settings below becomes just `claude-statusline`. Claude Code runs the command with the `PATH` it was launched with, which lacks the Homebrew prefix when it starts outside a login shell; use `"$(brew --prefix)/bin/claude-statusline"` resolved to its absolute path, or prepend the prefix in the command itself:
 
 ```json
 "command": "PATH=\"/opt/homebrew/bin:$PATH\" claude-statusline"
