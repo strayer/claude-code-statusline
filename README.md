@@ -1,6 +1,17 @@
 # Claude Code Statusline
 
+[![Release](https://img.shields.io/github/v/release/strayer/claude-code-statusline)](https://github.com/strayer/claude-code-statusline/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/strayer/claude-code-statusline/ci.yml?branch=main&label=CI)](https://github.com/strayer/claude-code-statusline/actions/workflows/ci.yml)
+[![Downloads](https://img.shields.io/github/downloads/strayer/claude-code-statusline/total)](https://github.com/strayer/claude-code-statusline/releases)
+[![Go version](https://img.shields.io/github/go-mod/go-version/strayer/claude-code-statusline)](go.mod)
+[![License](https://img.shields.io/github/license/strayer/claude-code-statusline)](LICENSE)
+
+[![Dependencies: none](https://img.shields.io/badge/dependencies-none-success)](#why)
+[![Provenance: attested](https://img.shields.io/badge/provenance-attested-blue)](#verifying-releases)
+
 A fast, dependency-free Go binary that renders a rich statusline for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Reimplemented from the original bash script by [jezweb/claude-skills](https://github.com/jezweb/claude-skills).
+
+![The statusline above the subagent panel: model chip, session name and directory on the first line, repo, branch and commit on the second, context bar, cache and rate limits on the third, then three subagent rows with their own context bars, token counts, model names, an idle marker and a worktree marker](docs/subagent-panel.png)
 
 ## Why?
 
@@ -150,9 +161,13 @@ On a GitLab remote the same segment describes the branch's open [merge request](
 
 ### Subagent panel
 
-When Claude spawns subagents, Claude Code lists them in a panel below the prompt as `name · description · token count`. With the `subagentStatusLine` setting above, the binary rewrites each row in the style of the metrics line:
+When Claude spawns subagents, Claude Code lists them in a panel below the prompt as `name · description · token count`. With the `subagentStatusLine` setting above, the binary rewrites each row in the style of the metrics line, as in the screenshot at the top:
 
-![The statusline above the subagent panel, with three subagent rows showing context bars, token counts, model names, an idle marker and a worktree marker](docs/subagent-panel.png)
+```
+Explore [⣤⠀⠀⠀⠀⠀⠀⠀⠀⠀] 6% 12k Sonnet 5.5 Searching for config loaders 2m
+reviewer code-reviewer [⣿⣿⣀⠀⠀⠀⠀⠀⠀⠀] 24% 48k idle Opus 5.5:high Reviewing diff for bugs 5m
+✗ refactorer [⣿⣿⣿⣿⣿⣿⣿⣿⣤⠀] 87% 174k Opus 4.6 wt Renaming Foo across packages 11m
+```
 
 - **Status**: `✓` for completed, `✗` for failed or stopped, nothing while running
 - **Name**: the subagent's name, with its type dimmed after it when the two differ
