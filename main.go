@@ -47,10 +47,22 @@ type RateLimits struct {
 
 // PromptCache summarizes the main conversation's prompt cache. ExpiresAt is
 // zero (null in the JSON) when the last response reported no cache tokens.
+// HitRatio is nil while no input tokens have been counted. LastMissAt is zero
+// until the first miss; LastMissCause stays nil when Claude Code couldn't
+// identify a cause.
 type PromptCache struct {
-	Warm            bool  `json:"warm"`
-	CachingObserved bool  `json:"caching_observed"`
-	ExpiresAt       int64 `json:"expires_at"`
+	Warm            bool       `json:"warm"`
+	CachingObserved bool       `json:"caching_observed"`
+	ExpiresAt       int64      `json:"expires_at"`
+	HitRatio        *float64   `json:"hit_ratio"`
+	LastMissAt      int64      `json:"last_miss_at"`
+	LastMissCause   *MissCause `json:"last_miss_cause"`
+}
+
+// MissCause names what Claude Code identified as the likely cause of a cache
+// miss, e.g. tools_changed, system_prompt_changed, ttl_expired_5m.
+type MissCause struct {
+	Causes []string `json:"causes"`
 }
 
 // VimInfo carries the vim mode (NORMAL, INSERT, VISUAL, VISUAL LINE), absent
@@ -161,6 +173,15 @@ const (
 func main() {
 	data, err := io.ReadAll(os.Stdin)
 	if err != nil || len(data) == 0 {
+		return
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "--subagents" {
+		var input SubagentInput
+		if err := json.Unmarshal(data, &input); err != nil {
+			return
+		}
+		renderSubagents(os.Stdout, input, time.Now())
 		return
 	}
 
@@ -637,35 +658,7 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 	totalTokens := input.ContextWindow.ContextWindowSize
 	freeK := float64(totalTokens) * remainPct / 100.0 / 1000.0
 
-	const unitsPerChar = 4
-	const barChars = 15
-	const totalUnits = barChars * unitsPerChar // 60
-	filledUnits := int(usagePct / 100.0 * float64(totalUnits))
-	if filledUnits < 0 {
-		filledUnits = 0
-	} else if filledUnits > totalUnits {
-		filledUnits = totalUnits
-	}
-
-	fullChars := filledUnits / unitsPerChar
-	partialLevel := filledUnits % unitsPerChar
-	emptyChars := barChars - fullChars
-	if partialLevel > 0 {
-		emptyChars--
-	}
-
-	// Braille characters filling bottom to top (both columns)
-	braillePartial := [5]rune{'⠀', '⣀', '⣤', '⣶', '⣿'}
-
-	fmt.Fprint(w, "[")
-	fmt.Fprint(w, cyanDim+strings.Repeat("⣿", fullChars))
-	if partialLevel > 0 {
-		fmt.Fprintf(w, "%c"+reset, braillePartial[partialLevel])
-	} else {
-		fmt.Fprint(w, reset)
-	}
-	fmt.Fprint(w, dim+strings.Repeat("⠀", emptyChars)+reset)
-	fmt.Fprint(w, "] ")
+	fmt.Fprint(w, contextBar(usagePct, 15)+" ")
 
 	if input.Exceeds200k {
 		fmt.Fprintf(w, yellow+"%.0f%%!"+reset, usagePct)
@@ -706,6 +699,37 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 	fmt.Fprintln(w)
 }
 
+// contextBar draws usagePct as a bracketed bar of chars braille cells, each
+// filling bottom to top in four steps.
+func contextBar(usagePct float64, chars int) string {
+	const unitsPerChar = 4
+	totalUnits := chars * unitsPerChar
+	filledUnits := int(usagePct / 100.0 * float64(totalUnits))
+	if filledUnits < 0 {
+		filledUnits = 0
+	} else if filledUnits > totalUnits {
+		filledUnits = totalUnits
+	}
+
+	fullChars := filledUnits / unitsPerChar
+	partialLevel := filledUnits % unitsPerChar
+	emptyChars := chars - fullChars
+	if partialLevel > 0 {
+		emptyChars--
+	}
+
+	// Braille characters filling bottom to top (both columns)
+	braillePartial := [5]rune{'⠀', '⣀', '⣤', '⣶', '⣿'}
+
+	var b strings.Builder
+	b.WriteString("[" + cyanDim + strings.Repeat("⣿", fullChars))
+	if partialLevel > 0 {
+		b.WriteRune(braillePartial[partialLevel])
+	}
+	b.WriteString(reset + dim + strings.Repeat("⠀", emptyChars) + reset + "]")
+	return b.String()
+}
+
 // renderPR appends the open pull request (or GitLab merge request), colored by
 // review state.
 func renderPR(w io.Writer, pr *PRInfo) {
@@ -732,10 +756,16 @@ func renderPR(w io.Writer, pr *PRInfo) {
 	fmt.Fprintf(w, " | %s%s%s%s", color, hyperlink(pr.URL, label), marker, reset)
 }
 
+// recentMiss is how long a diagnosed cache miss stays on the statusline. The
+// JSON carries only the time of the last miss, not whether the latest request
+// was one, so a short window approximates "the last request missed".
+const recentMiss = 2 * time.Minute
+
 // renderPromptCache shows when a warm cache goes cold. The statusline only
 // re-runs on events, so it shows the expiry as a clock time rather than a
 // countdown that would freeze while the session is idle. Claude Code re-runs
-// it at expiry, which flips the segment to cold.
+// it at expiry, which flips the segment to cold. The session hit ratio
+// follows, and a fresh miss adds its cause.
 func renderPromptCache(w io.Writer, pc *PromptCache, now time.Time) {
 	if pc == nil || !pc.CachingObserved {
 		return
@@ -747,9 +777,21 @@ func renderPromptCache(w io.Writer, pc *PromptCache, now time.Time) {
 			color = yellowDim
 		}
 		fmt.Fprintf(w, " | %scache→%s%s", color, expires.Local().Format("15:04"), reset)
-		return
+	} else {
+		fmt.Fprint(w, " | "+dim+"cache cold"+reset)
 	}
-	fmt.Fprint(w, " | "+dim+"cache cold"+reset)
+
+	if pc.HitRatio != nil {
+		fmt.Fprintf(w, " %s%.0f%%%s", dim, *pc.HitRatio*100, reset)
+	}
+
+	if pc.LastMissAt > 0 && now.Sub(time.Unix(pc.LastMissAt, 0)) < recentMiss {
+		cause := "miss"
+		if pc.LastMissCause != nil && len(pc.LastMissCause.Causes) > 0 {
+			cause = strings.Join(pc.LastMissCause.Causes, "+")
+		}
+		fmt.Fprintf(w, " %s✗%s%s", yellow, cause, reset)
+	}
 }
 
 func renderRateLimits(w io.Writer, rl *RateLimits, now time.Time) {
