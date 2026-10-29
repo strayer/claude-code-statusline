@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -886,6 +887,76 @@ func TestPromptCache(t *testing.T) {
 		in.PromptCache = &PromptCache{Warm: true, CachingObserved: true, ExpiresAt: testNow.Unix() - 1}
 		if out := render(in, GitInfo{}); !strings.Contains(out, "cache cold") {
 			t.Errorf("expected cache cold, got: %q", out)
+		}
+	})
+
+	t.Run("hit ratio follows the expiry", func(t *testing.T) {
+		in := defaultInput()
+		ratio := 0.912
+		in.PromptCache = &PromptCache{Warm: true, CachingObserved: true, ExpiresAt: testNow.Unix() + 600, HitRatio: &ratio}
+		out := render(in, GitInfo{})
+		if !strings.Contains(out, reset+" "+dim+"91%"+reset) {
+			t.Errorf("expected 91%% hit ratio after expiry, got: %q", out)
+		}
+	})
+
+	t.Run("hit ratio shown when cold", func(t *testing.T) {
+		in := defaultInput()
+		ratio := 0.5
+		in.PromptCache = &PromptCache{CachingObserved: true, HitRatio: &ratio}
+		if out := render(in, GitInfo{}); !strings.Contains(out, "cache cold"+reset+" "+dim+"50%") {
+			t.Errorf("expected cold with hit ratio, got: %q", out)
+		}
+	})
+
+	t.Run("null hit ratio omitted", func(t *testing.T) {
+		in := defaultInput()
+		in.PromptCache = &PromptCache{Warm: true, CachingObserved: true, ExpiresAt: testNow.Unix() + 600}
+		if out := render(in, GitInfo{}); strings.Contains(out, dim+"0%") {
+			t.Errorf("expected no hit ratio, got: %q", out)
+		}
+	})
+
+	t.Run("recent miss shows its causes", func(t *testing.T) {
+		in := defaultInput()
+		in.PromptCache = &PromptCache{
+			Warm: true, CachingObserved: true, ExpiresAt: testNow.Unix() + 600,
+			LastMissAt:    testNow.Unix() - 30,
+			LastMissCause: &MissCause{Causes: []string{"tools_changed", "system_prompt_changed"}},
+		}
+		if out := render(in, GitInfo{}); !strings.Contains(out, yellow+"✗tools_changed+system_prompt_changed"+reset) {
+			t.Errorf("expected miss causes, got: %q", out)
+		}
+	})
+
+	t.Run("recent miss without diagnosis", func(t *testing.T) {
+		in := defaultInput()
+		in.PromptCache = &PromptCache{Warm: true, CachingObserved: true, ExpiresAt: testNow.Unix() + 600, LastMissAt: testNow.Unix() - 30}
+		if out := render(in, GitInfo{}); !strings.Contains(out, yellow+"✗miss"+reset) {
+			t.Errorf("expected generic miss marker, got: %q", out)
+		}
+	})
+
+	t.Run("old miss not shown", func(t *testing.T) {
+		in := defaultInput()
+		in.PromptCache = &PromptCache{
+			Warm: true, CachingObserved: true, ExpiresAt: testNow.Unix() + 600,
+			LastMissAt:    testNow.Unix() - int64(recentMiss.Seconds()) - 1,
+			LastMissCause: &MissCause{Causes: []string{"tools_changed"}},
+		}
+		if out := render(in, GitInfo{}); strings.Contains(out, "✗") {
+			t.Errorf("expected no miss marker, got: %q", out)
+		}
+	})
+
+	t.Run("hit ratio and miss decode from JSON", func(t *testing.T) {
+		var in Input
+		data := `{"prompt_cache":{"warm":true,"caching_observed":true,"expires_at":1,"hit_ratio":null,"last_miss_at":null,"last_miss_cause":null}}`
+		if err := json.Unmarshal([]byte(data), &in); err != nil {
+			t.Fatal(err)
+		}
+		if in.PromptCache.HitRatio != nil || in.PromptCache.LastMissAt != 0 || in.PromptCache.LastMissCause != nil {
+			t.Errorf("expected nulls to decode as absent, got %+v", in.PromptCache)
 		}
 	})
 }
