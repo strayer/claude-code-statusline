@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -262,8 +263,14 @@ func repoNameFromDir(dir string) string {
 	}
 }
 
-// gitTimeout bounds all git calls of a render together.
-const gitTimeout = 500 * time.Millisecond
+const (
+	// gitTimeout bounds all git calls of a render together.
+	gitTimeout = 500 * time.Millisecond
+	// gitWaitDelay is how long a git process that has exited or been killed
+	// may keep its output pipe open through a descendant, such as a
+	// filesystem monitor it started, before the pipe is abandoned.
+	gitWaitDelay = 50 * time.Millisecond
+)
 
 func gitCmd(ctx context.Context, dir string, args ...string) (string, error) {
 	// Use --no-optional-locks to avoid creating .git/index.lock, which would
@@ -274,7 +281,10 @@ func gitCmd(ctx context.Context, dir string, args ...string) (string, error) {
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = nil
-	if err := cmd.Run(); err != nil {
+	cmd.WaitDelay = gitWaitDelay
+	// ErrWaitDelay means git itself succeeded and its output is complete; only
+	// a descendant was still holding the pipe.
+	if err := cmd.Run(); err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		return "", err
 	}
 	return out.String(), nil

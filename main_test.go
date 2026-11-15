@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -1195,6 +1196,33 @@ func fakeGit(t *testing.T, script string) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestGitCmdDescendantHoldsStdout(t *testing.T) {
+	t.Run("output of an exited git is kept", func(t *testing.T) {
+		fakeGit(t, "echo output\nsleep 5 &")
+		start := time.Now()
+		out, err := gitCmd(context.Background(), t.TempDir(), "status")
+		if err != nil || out != "output\n" {
+			t.Errorf("got %q, %v, want the output and no error", out, err)
+		}
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Errorf("waited %v for a descendant holding stdout", elapsed)
+		}
+	})
+
+	t.Run("deadline is enforced", func(t *testing.T) {
+		fakeGit(t, "sleep 5 &\nsleep 5")
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		if _, err := gitCmd(ctx, t.TempDir(), "status"); err == nil {
+			t.Error("expected an error after the deadline")
+		}
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Errorf("deadline exceeded by far: %v", elapsed)
+		}
+	})
 }
 
 func TestCollectGitInfoSubject(t *testing.T) {
