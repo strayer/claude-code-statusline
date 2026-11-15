@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -141,7 +140,7 @@ type PRInfo struct {
 	URL         string `json:"url"`
 }
 
-// Git info collected from parallel commands
+// Git info that Claude Code doesn't report
 
 type GitInfo struct {
 	RepoName      string
@@ -150,7 +149,6 @@ type GitInfo struct {
 	Ahead         string
 	Behind        string
 	Dirty         bool
-	IsWorktree    bool
 	CommitMessage string
 }
 
@@ -191,7 +189,7 @@ func main() {
 	}
 
 	homeDir, _ := os.UserHomeDir()
-	gitInfo := collectGitInfo(input.Workspace.CurrentDir)
+	gitInfo := collectGitInfo(input.Workspace.CurrentDir, input.Workspace.Repo.Name == "")
 	// Claude Code captures stdout, so the terminal width only reaches us via
 	// COLUMNS. Zero means unknown and falls back to fixed limits.
 	cols, _ := strconv.Atoi(os.Getenv("COLUMNS"))
@@ -210,74 +208,62 @@ func detectSandbox() string {
 	return ""
 }
 
-func collectGitInfo(dir string) GitInfo {
+// collectGitInfo gathers what Claude Code doesn't report about the repository.
+// Every render pays for it, so the two git processes it needs run concurrently
+// under one deadline and the repository name is read from the directory
+// layout. needRepoName is false when Claude Code reported the name.
+func collectGitInfo(dir string, needRepoName bool) GitInfo {
 	if dir == "" {
 		return GitInfo{}
 	}
 
-	var info GitInfo
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 	defer cancel()
 
-	// Command 1: git status --porcelain=v2 --branch
-	wg.Add(1)
+	// On a branch without commits git log fails and there is no subject.
+	subject := make(chan string, 1)
 	go func() {
-		defer wg.Done()
-		out, err := gitCmd(ctx, dir, "status", "--porcelain=v2", "--branch")
-		if err != nil {
-			return
-		}
-		branch, hash, ahead, behind, dirty := parseGitStatus(out)
-		mu.Lock()
-		info.Branch = branch
-		info.ShortHash = hash
-		info.Ahead = ahead
-		info.Behind = behind
-		info.Dirty = dirty
-		mu.Unlock()
+		out, _ := gitCmd(ctx, dir, "log", "-1", "--format=%s")
+		subject <- truncateCommitMessage(strings.TrimSpace(out))
 	}()
 
-	// Command 2: git rev-parse --show-toplevel --git-dir
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		out, err := gitCmd(ctx, dir, "rev-parse", "--show-toplevel", "--git-dir")
-		if err != nil {
-			return
-		}
-		lines := strings.SplitN(strings.TrimSpace(out), "\n", 2)
-		if len(lines) >= 1 {
-			mu.Lock()
-			info.RepoName = filepath.Base(lines[0])
-			mu.Unlock()
-		}
-		if len(lines) >= 2 {
-			mu.Lock()
-			info.IsWorktree = strings.Contains(lines[1], "/worktrees/")
-			mu.Unlock()
-		}
-	}()
+	var info GitInfo
+	out, err := gitCmd(ctx, dir, "status", "--porcelain=v2", "--branch")
+	if err != nil {
+		return info
+	}
+	info.Branch, info.ShortHash, info.Ahead, info.Behind, info.Dirty = parseGitStatus(out)
 
-	// Command 3: git log -1 --format=%s
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		out, err := gitCmd(ctx, dir, "log", "-1", "--format=%s")
-		if err != nil {
-			return
-		}
-		msg := truncateCommitMessage(strings.TrimSpace(out))
-		mu.Lock()
-		info.CommitMessage = msg
-		mu.Unlock()
-	}()
-
-	wg.Wait()
+	if needRepoName {
+		info.RepoName = repoNameFromDir(dir)
+	}
+	if info.ShortHash != "" {
+		info.CommitMessage = <-subject
+	}
 	return info
 }
+
+// repoNameFromDir names the repository after the directory that holds .git,
+// searching upwards from dir. It stands in for the origin remote's name in
+// repositories that have no such remote.
+func repoNameFromDir(dir string) string {
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	for {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return filepath.Base(dir)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// gitTimeout bounds all git calls of a render together.
+const gitTimeout = 500 * time.Millisecond
 
 func gitCmd(ctx context.Context, dir string, args ...string) (string, error) {
 	// Use --no-optional-locks to avoid creating .git/index.lock, which would
@@ -625,13 +611,10 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 
 		renderPR(&line, input.PR)
 
-		// Claude Code reports the worktree name for any linked worktree; the
-		// git-dir probe is the fallback for versions that omit the field.
+		// Claude Code reports the worktree name for any linked worktree.
 		suffix := ""
 		if wt := input.Workspace.GitWorktree; wt != "" {
 			suffix = " | " + yellow + "wt:" + wt + reset
-		} else if git.IsWorktree {
-			suffix = " | " + yellow + "wt" + reset
 		}
 
 		if git.ShortHash != "" {

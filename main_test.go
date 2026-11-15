@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -313,18 +316,6 @@ func TestRenderOutput(t *testing.T) {
 		}
 	})
 
-	t.Run("worktree indicator", func(t *testing.T) {
-		out := render(defaultInput(), GitInfo{
-			RepoName:   "myrepo",
-			Branch:     "main",
-			IsWorktree: true,
-		})
-
-		if !strings.Contains(out, "wt") {
-			t.Errorf("expected wt indicator in output, got: %q", out)
-		}
-	})
-
 	t.Run("effort level in model chip", func(t *testing.T) {
 		in := defaultInput()
 		in.Effort = EffortInfo{Level: "high"}
@@ -528,34 +519,6 @@ func TestRenderWorktree(t *testing.T) {
 
 		if !strings.Contains(out, "wt:feature-xyz") {
 			t.Errorf("expected named worktree indicator, got: %q", out)
-		}
-	})
-
-	t.Run("session data preferred over git detection", func(t *testing.T) {
-		in := defaultInput()
-		in.Workspace.GitWorktree = "feature-xyz"
-		git := gitRepo
-		git.IsWorktree = true
-		out := render(in, git)
-
-		if !strings.Contains(out, "wt:feature-xyz") {
-			t.Errorf("expected named worktree indicator, got: %q", out)
-		}
-		if strings.Contains(out, "| "+yellow+"wt"+reset) {
-			t.Errorf("expected no bare wt indicator alongside the name, got: %q", out)
-		}
-	})
-
-	t.Run("falls back to git detection without session data", func(t *testing.T) {
-		git := gitRepo
-		git.IsWorktree = true
-		out := render(defaultInput(), git)
-
-		if !strings.Contains(out, "wt") {
-			t.Errorf("expected bare wt indicator, got: %q", out)
-		}
-		if strings.Contains(out, "wt:") {
-			t.Errorf("expected no worktree name, got: %q", out)
 		}
 	})
 
@@ -1172,4 +1135,79 @@ func TestWideCharactersFit(t *testing.T) {
 	if got := shortenPath("/opt/日本語/日本語/日本語", "", 10); visibleWidth(got) > 10 {
 		t.Errorf("shortenPath width %d exceeds 10: %q", visibleWidth(got), got)
 	}
+}
+
+func TestRepoNameFromDir(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "my-experiment")
+	nested := filepath.Join(repo, "a", "b")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(nested, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("repository root", func(t *testing.T) {
+		if got := repoNameFromDir(repo); got != "my-experiment" {
+			t.Errorf("got %q, want my-experiment", got)
+		}
+	})
+
+	t.Run("nested directory", func(t *testing.T) {
+		if got := repoNameFromDir(nested); got != "my-experiment" {
+			t.Errorf("got %q, want my-experiment", got)
+		}
+	})
+
+	t.Run("linked worktree has a .git file", func(t *testing.T) {
+		wt := filepath.Join(root, "feature-wt")
+		if err := os.MkdirAll(wt, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: /elsewhere\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := repoNameFromDir(wt); got != "feature-wt" {
+			t.Errorf("got %q, want feature-wt", got)
+		}
+	})
+
+	t.Run("symlinked directory resolves to the repository", func(t *testing.T) {
+		link := filepath.Join(root, "link")
+		if err := os.Symlink(repo, link); err != nil {
+			t.Skip("symlinks unavailable:", err)
+		}
+		if got := repoNameFromDir(link); got != "my-experiment" {
+			t.Errorf("got %q, want my-experiment", got)
+		}
+	})
+}
+
+// fakeGit puts a script named git first on PATH.
+func fakeGit(t *testing.T, script string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX shell")
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\n"+script+"\n"), 0o700); err != nil { // #nosec G306 -- must be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestCollectGitInfoSubject(t *testing.T) {
+	fakeGit(t, `case "$2" in
+status) printf '# branch.oid abc1234def\n# branch.head main\n' ;;
+log) printf '%s\n' "$SUBJECT" ;;
+esac`)
+
+	t.Run("subject is read alongside the status", func(t *testing.T) {
+		t.Setenv("SUBJECT", "Add the thing")
+		want := GitInfo{Branch: "main", ShortHash: "abc1234", CommitMessage: "Add the thing"}
+		if got := collectGitInfo(t.TempDir(), false); got != want {
+			t.Errorf("got %+v, want %+v", got, want)
+		}
+	})
 }

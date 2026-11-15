@@ -18,7 +18,7 @@ A fast, dependency-free Go binary that renders a rich statusline for [Claude Cod
 The original bash implementation spawns ~10 sequential git subprocesses and ~15 jq invocations per render. This Go rewrite:
 
 - **Single JSON parse** instead of many jq calls
-- **3 parallel git calls** with 500ms timeout
+- **Two concurrent git calls** per render, sharing a 500ms timeout
 - **Locale-independent** cost formatting (no `printf "%.2f"` locale bugs)
 - **Zero dependencies** — stdlib only
 
@@ -194,9 +194,9 @@ The command receives all visible rows as one JSON object and answers with a `{"i
 
 ### Worktrees
 
-The repo name comes from the `origin` remote as reported by Claude Code, so it stays correct inside worktrees; without a remote it falls back to the repository directory name.
+The repo name comes from the `origin` remote as reported by Claude Code, so it stays correct inside worktrees; without an `origin` remote it falls back to the name of the directory that holds `.git`.
 
-Inside a linked git worktree the line ends with `wt:<name>`, using the worktree name reported by Claude Code. Older versions that do not report it fall back to a bare `wt`, detected from the git directory.
+Inside a linked git worktree the line ends with `wt:<name>`, using the worktree name reported by Claude Code. This needs Claude Code 2.1.97 or later.
 
 ## Releasing
 
