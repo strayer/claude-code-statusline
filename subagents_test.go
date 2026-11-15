@@ -307,3 +307,29 @@ func TestShortModel(t *testing.T) {
 		}
 	}
 }
+
+func TestSubagentInputSanitize(t *testing.T) {
+	payload := `{"tasks": [{
+		"id": "a\u001b1",
+		"name": "re\u001b[31mviewer",
+		"agentType": "general\npurpose",
+		"description": "\u001b]0;title\u0007Review",
+		"label": "la\u009bbel",
+		"model": "claude-opus\u0000-5-5",
+		"effort": "hi\u001bgh"
+	}]}`
+	var in SubagentInput
+	if err := json.Unmarshal([]byte(payload), &in); err != nil {
+		t.Fatal(err)
+	}
+	in.sanitize()
+
+	task := in.Tasks[0]
+	got := []string{task.ID, task.Name, task.AgentType, task.Description, task.Label, task.Model, string(task.Effort)}
+	want := []string{"a\x1b1", "re[31mviewer", "general purpose", "]0;titleReview", "label", "claude-opus-5-5", "high"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("field %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}

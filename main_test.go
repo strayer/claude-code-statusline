@@ -1223,3 +1223,88 @@ esac`)
 		}
 	})
 }
+
+func TestSanitize(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain text unchanged", "Fix the thing — 日本語 🎉", "Fix the thing — 日本語 🎉"},
+		{"ESC of a color sequence removed", "\x1b[31mred\x1b[0m", "[31mred[0m"},
+		{"OSC link loses ESC and BEL", "\x1b]8;;https://example.com\aname\x1b]8;;\a", "]8;;https://example.comname]8;;"},
+		{"newline becomes a space", "one\ntwo", "one two"},
+		{"carriage return becomes a space", "one\r\ntwo", "one  two"},
+		{"tab becomes a space", "one\ttwo", "one two"},
+		{"NUL removed", "a\x00b", "ab"},
+		{"DEL removed", "a\x7fb", "ab"},
+		{"C1 CSI removed", "a\u009b31mb", "a31mb"},
+		{"C1 NEL removed", "a\u0085b", "ab"},
+		{"invalid UTF-8 becomes U+FFFD", "caf\xe9", "caf\ufffd"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sanitize(tt.in); got != tt.want {
+				t.Errorf("sanitize(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInputSanitize(t *testing.T) {
+	payload := `{
+		"model": {"display_name": "Claude\u001b[31m Opus"},
+		"session_name": "\u001b]0;title\u0007name\nnext",
+		"workspace": {
+			"current_dir": "/home/user/a\tb",
+			"git_worktree": "wt\u009b2J",
+			"repo": {"host": "git\u0000hub.com", "owner": "o\rwner", "name": "na\u007fme"}
+		},
+		"output_style": {"name": "con\u001bcise"},
+		"agent": {"name": "re\nviewer"},
+		"effort": {"level": "hi\u0000gh"},
+		"vim": {"mode": "NOR\u001bMAL"},
+		"prompt_cache": {"last_miss_cause": {"causes": ["tools\u001b_changed"]}}
+	}`
+	var in Input
+	if err := json.Unmarshal([]byte(payload), &in); err != nil {
+		t.Fatal(err)
+	}
+	in.sanitize()
+
+	got := []string{
+		in.Model.DisplayName, in.SessionName, in.Workspace.CurrentDir, in.Workspace.GitWorktree,
+		in.Workspace.Repo.Host, in.Workspace.Repo.Owner, in.Workspace.Repo.Name,
+		in.OutputStyle.Name, in.Agent.Name, in.Effort.Level, in.Vim.Mode,
+		in.PromptCache.LastMissCause.Causes[0],
+	}
+	want := []string{
+		"Claude[31m Opus", "]0;titlename next", "/home/user/a b", "wt2J",
+		"github.com", "o wner", "name",
+		"concise", "re viewer", "high", "NORMAL",
+		"tools_changed",
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("field %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestCollectGitInfoSanitizes(t *testing.T) {
+	fakeGit(t, `case "$2" in
+status) printf '# branch.oid abc1234def\n# branch.head ma\033[31min\n' ;;
+log) printf '\033[31mred\033[0m\tsubject\000 with \302\233controls\n' ;;
+esac`)
+	want := GitInfo{Branch: "ma[31min", ShortHash: "abc1234", CommitMessage: "[31mred[0m subject with controls"}
+	if got := collectGitInfo(t.TempDir(), false); got != want {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestDetectSandboxSanitizes(t *testing.T) {
+	t.Setenv("SANDBOX_VM_ID", "vm\x1b[31m\n1")
+	if got, want := detectSandbox(), "sbx[vm[31m 1]"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}

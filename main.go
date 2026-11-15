@@ -180,6 +180,7 @@ func main() {
 		if err := json.Unmarshal(data, &input); err != nil {
 			return
 		}
+		input.sanitize()
 		renderSubagents(os.Stdout, input, time.Now())
 		return
 	}
@@ -189,19 +190,65 @@ func main() {
 		return
 	}
 
+	// git needs the directory as reported; everything else is only displayed.
+	dir := input.Workspace.CurrentDir
+	input.sanitize()
+
 	homeDir, _ := os.UserHomeDir()
-	gitInfo := collectGitInfo(input.Workspace.CurrentDir, input.Workspace.Repo.Name == "")
+	homeDir = sanitize(homeDir)
+	gitInfo := collectGitInfo(dir, input.Workspace.Repo.Name == "")
 	// Claude Code captures stdout, so the terminal width only reaches us via
 	// COLUMNS. Zero means unknown and falls back to fixed limits.
 	cols, _ := strconv.Atoi(os.Getenv("COLUMNS"))
 	renderOutput(os.Stdout, input, gitInfo, time.Now(), homeDir, detectSandbox(), cols)
 }
 
+// sanitize makes text from outside the program safe to print: control
+// characters (Unicode category Cc, which covers ESC and the C1 controls) never
+// reach the terminal. Tab, line feed and carriage return become a space, the
+// others are dropped. Invalid UTF-8 comes out as U+FFFD.
+func sanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t', r == '\n', r == '\r':
+			return ' '
+		case unicode.IsControl(r):
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// sanitize cleans every string of the payload that is displayed.
+func (in *Input) sanitize() {
+	fields := []*string{
+		&in.Model.DisplayName,
+		&in.Workspace.CurrentDir,
+		&in.Workspace.GitWorktree,
+		&in.Workspace.Repo.Host,
+		&in.Workspace.Repo.Owner,
+		&in.Workspace.Repo.Name,
+		&in.OutputStyle.Name,
+		&in.Agent.Name,
+		&in.Effort.Level,
+		&in.Vim.Mode,
+		&in.SessionName,
+	}
+	if pc := in.PromptCache; pc != nil && pc.LastMissCause != nil {
+		for i := range pc.LastMissCause.Causes {
+			fields = append(fields, &pc.LastMissCause.Causes[i])
+		}
+	}
+	for _, f := range fields {
+		*f = sanitize(*f)
+	}
+}
+
 // detectSandbox returns a label when running inside an agent sandbox
 // (e.g. Docker AI Agent Sandboxes), detected via inherited env vars.
 func detectSandbox() string {
 	if id := os.Getenv("SANDBOX_VM_ID"); id != "" {
-		return "sbx[" + id + "]"
+		return "sbx[" + sanitize(id) + "]"
 	}
 	if os.Getenv("IS_SANDBOX") != "" {
 		return "sbx"
@@ -228,7 +275,7 @@ func collectGitInfo(dir string, needRepoName bool) GitInfo {
 	subject := make(chan string, 1)
 	go func() {
 		out, _ := gitCmd(ctx, dir, "log", "-1", "--format=%s")
-		subject <- truncateWidth(strings.TrimSpace(out), maxSubjectWidth)
+		subject <- truncateWidth(strings.TrimSpace(sanitize(out)), maxSubjectWidth)
 	}()
 
 	var info GitInfo
@@ -237,9 +284,10 @@ func collectGitInfo(dir string, needRepoName bool) GitInfo {
 		return info
 	}
 	info.Branch, info.ShortHash, info.Ahead, info.Behind, info.Dirty = parseGitStatus(out)
+	info.Branch = sanitize(info.Branch)
 
 	if needRepoName {
-		info.RepoName = repoNameFromDir(dir)
+		info.RepoName = sanitize(repoNameFromDir(dir))
 	}
 	if info.ShortHash != "" {
 		info.CommitMessage = <-subject
