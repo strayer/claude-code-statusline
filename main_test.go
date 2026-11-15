@@ -731,30 +731,6 @@ func TestDetectSandbox(t *testing.T) {
 	}
 }
 
-func TestTruncateCommitMessage(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"short message unchanged", "hello", "hello"},
-		{"exact 70 runes unchanged", strings.Repeat("a", 70), strings.Repeat("a", 70)},
-		{"long ascii truncated to 70 with ellipsis", strings.Repeat("a", 75), strings.Repeat("a", 70) + "…"},
-		{"emoji preserved at boundary", strings.Repeat("a", 69) + "🎉", strings.Repeat("a", 69) + "🎉"},
-		{"emoji not split", strings.Repeat("a", 70) + "🎉", strings.Repeat("a", 70) + "…"},
-		{"multi-byte truncation preserves valid utf8", strings.Repeat("a", 68) + "🎉🎉🎉", strings.Repeat("a", 68) + "🎉🎉" + "…"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := truncateCommitMessage(tt.input)
-			if got != tt.want {
-				t.Errorf("truncateCommitMessage(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
 func renderCols(input Input, git GitInfo, cols int) string {
 	var buf bytes.Buffer
 	renderOutput(&buf, input, git, testNow, "/home/user", "", cols)
@@ -1236,6 +1212,14 @@ esac`)
 		want := GitInfo{Branch: "main", ShortHash: "abc1234", CommitMessage: "Add the thing"}
 		if got := collectGitInfo(t.TempDir(), false); got != want {
 			t.Errorf("got %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("subject is cut by width", func(t *testing.T) {
+		t.Setenv("SUBJECT", strings.Repeat("日", 40))
+		got := collectGitInfo(t.TempDir(), false).CommitMessage
+		if want := strings.Repeat("日", 34) + "…"; got != want {
+			t.Errorf("got %q, want %q", got, want)
 		}
 	})
 }

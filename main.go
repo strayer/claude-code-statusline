@@ -209,6 +209,9 @@ func detectSandbox() string {
 	return ""
 }
 
+// maxSubjectWidth caps the commit subject, in terminal columns.
+const maxSubjectWidth = 70
+
 // collectGitInfo gathers what Claude Code doesn't report about the repository.
 // Every render pays for it, so the two git processes it needs run concurrently
 // under one deadline and the repository name is read from the directory
@@ -225,7 +228,7 @@ func collectGitInfo(dir string, needRepoName bool) GitInfo {
 	subject := make(chan string, 1)
 	go func() {
 		out, _ := gitCmd(ctx, dir, "log", "-1", "--format=%s")
-		subject <- truncateCommitMessage(strings.TrimSpace(out))
+		subject <- truncateWidth(strings.TrimSpace(out), maxSubjectWidth)
 	}()
 
 	var info GitInfo
@@ -319,14 +322,6 @@ func parseGitStatus(output string) (branch, shortHash, ahead, behind string, dir
 		}
 	}
 	return
-}
-
-func truncateCommitMessage(msg string) string {
-	const maxRunes = 70
-	if runes := []rune(msg); len(runes) > maxRunes {
-		return string(runes[:maxRunes]) + "…"
-	}
-	return msg
 }
 
 func isHexString(s string) bool {
