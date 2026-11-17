@@ -191,6 +191,9 @@ On a GitLab remote the same segment describes the branch's open [merge request](
 
 When Claude spawns subagents, Claude Code lists them in a panel below the prompt as `name · description · token count`. With the `subagentStatusLine` setting above, the binary rewrites each row in the style of the metrics line, as in the screenshot at the top:
 
+> [!NOTE]
+> Claude Code has deprecated `subagentStatusLine`. Version 2.1.323 removed it, and 2.1.326 brought it back with the `/status` warning "subagentStatusLine is deprecated in favor of mods and will stop working in a future release". Once your version ignores the setting, the rows fall back to Claude Code's default look and this part of the binary goes unused.
+
 ```
 Explore [⣤⠀⠀⠀⠀⠀⠀⠀⠀⠀] 6% 12k Sonnet 5.5 Searching for config loaders 2m
 reviewer code-reviewer [⣿⣿⣀⠀⠀⠀⠀⠀⠀⠀] 24% 48k idle Opus 5.5:high Reviewing diff for bugs 5m
