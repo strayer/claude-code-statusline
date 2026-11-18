@@ -11,7 +11,7 @@
 
 A fast, dependency-free Go binary that renders a rich statusline for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Reimplemented from the original bash script by [jezweb/claude-skills](https://github.com/jezweb/claude-skills).
 
-![Three example renderings in a terminal window. Two statuslines, each with the model chip and directory on the first line, repo, branch and commit on the second, and context bar and metrics on the third: API usage with a pull request and session cost, and a subscription with vim mode, session name, prompt cache and rate limits. Below them, the subagent panel with three rows that carry their own context bars, token counts, model names, an idle marker and a worktree marker](docs/screenshot.png)
+![Three example renderings in a terminal window. Two statuslines, each with the model chip and directory on the first line, repo, branch and commit on the second, and context bar and metrics on the third: API usage with a pull request and session cost, and a subscription with session name, prompt cache and rate limits. Below them, the subagent panel with three rows that carry their own context bars, token counts, model names, an idle marker and a worktree marker](docs/screenshot.png)
 
 ## Why?
 
@@ -95,8 +95,6 @@ Then configure in `~/.claude/settings.json`:
 }
 ```
 
-If you use [vim mode](https://code.claude.com/docs/en/interactive-mode#vim-editor-mode), add `"hideVimModeIndicator": true` to `statusLine`. The statusline shows the mode itself, so it isn't shown twice.
-
 To also replace the rows in the [subagent panel](#subagent-panel), add:
 
 ```json
@@ -144,7 +142,7 @@ my-repo:main | [abc1234] Last commit message
 [⣿⣿⣤⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀] 10% | 900k free | +42/-10 | 1h 30m | 5h: 80% (3h) | 7d: 55% (4d)
 ```
 
-- **Line 1** (session): Sandbox indicator (`sbx[vm-id]` when running inside an agent sandbox, detected via `SANDBOX_VM_ID`/`IS_SANDBOX`), vim mode, model, output style, reasoning effort, fast mode, agent, session name, working directory (`~` for home, left-truncated to fit)
+- **Line 1** (session): Sandbox indicator (`sbx[vm-id]` when running inside an agent sandbox, detected via `SANDBOX_VM_ID`/`IS_SANDBOX`), model, output style, reasoning effort, fast mode, agent, session name, working directory (`~` for home, left-truncated to fit)
 - **Line 2** (git): Repo (linked to its web page), branch, dirty/ahead/behind, pull request (linked), commit hash + message, worktree — skipped outside git repos
 - **Line 3** (metrics): Context bar, percentage (with `!` warning above 200k tokens), free tokens, lines changed, duration, prompt cache with hit ratio and recent misses, cost (API) or rate limits with reset countdown (subscribers), spend limit (Claude apps gateway)
 

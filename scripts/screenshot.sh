@@ -146,7 +146,6 @@ EOF
 {
   "model": {"display_name": "Sonnet 5.5"},
   "effort": {"level": "medium"},
-  "vim": {"mode": "INSERT"},
   "session_name": "fix flaky tests",
   "workspace": {
     "current_dir": "$dir",

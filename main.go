@@ -31,7 +31,6 @@ type Input struct {
 	PR            *PRInfo       `json:"pr"`
 	RateLimits    *RateLimits   `json:"rate_limits"`
 	PromptCache   *PromptCache  `json:"prompt_cache"`
-	Vim           VimInfo       `json:"vim"`
 	SessionName   string        `json:"session_name"`
 	Exceeds200k   bool          `json:"exceeds_200k_tokens"`
 	FastMode      bool          `json:"fast_mode"`
@@ -63,12 +62,6 @@ type PromptCache struct {
 // miss, e.g. tools_changed, system_prompt_changed, ttl_expired_5m.
 type MissCause struct {
 	Causes []string `json:"causes"`
-}
-
-// VimInfo carries the vim mode (NORMAL, INSERT, VISUAL, VISUAL LINE), absent
-// unless vim mode is enabled.
-type VimInfo struct {
-	Mode string `json:"mode"`
 }
 
 type RateWindow struct {
@@ -231,7 +224,6 @@ func (in *Input) sanitize() {
 		&in.OutputStyle.Name,
 		&in.Agent.Name,
 		&in.Effort.Level,
-		&in.Vim.Mode,
 		&in.SessionName,
 	}
 	if pc := in.PromptCache; pc != nil && pc.LastMissCause != nil {
@@ -610,27 +602,12 @@ func nameAndPathWidths(free int, name, path string) (nameLen, pathLen int) {
 	return nameLen, pathLen
 }
 
-func vimModeColor(mode string) string {
-	switch mode {
-	case "INSERT":
-		return green
-	case "NORMAL":
-		return blue
-	default: // VISUAL, VISUAL LINE
-		return magenta
-	}
-}
-
 func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir, sandbox string, cols int) {
 
-	// ── Line 1: sbx[id] | MODE | [Model:style:effort] | fast | @agent | name | dir ──
+	// ── Line 1: sbx[id] | [Model:style:effort] | fast | @agent | name | dir ──
 	var line strings.Builder
 	if sandbox != "" {
 		line.WriteString(yellow + sandbox + reset + " | ")
-	}
-
-	if mode := input.Vim.Mode; mode != "" {
-		line.WriteString(vimModeColor(mode) + mode + reset + " | ")
 	}
 
 	chip := strings.TrimPrefix(input.Model.DisplayName, "Claude ")
