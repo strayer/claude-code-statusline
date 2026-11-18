@@ -11,7 +11,7 @@
 
 A fast, dependency-free Go binary that renders a rich statusline for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Reimplemented from the original bash script by [jezweb/claude-skills](https://github.com/jezweb/claude-skills).
 
-![The statusline above the subagent panel: model chip, session name and directory on the first line, repo, branch and commit on the second, context bar, cache and rate limits on the third, then three subagent rows with their own context bars, token counts, model names, an idle marker and a worktree marker](docs/subagent-panel.png)
+![Three example renderings in a terminal window. Two statuslines, each with the model chip and directory on the first line, repo, branch and commit on the second, and context bar and metrics on the third: API usage with a pull request and session cost, and a subscription with vim mode, session name, prompt cache and rate limits. Below them, the subagent panel with three rows that carry their own context bars, token counts, model names, an idle marker and a worktree marker](docs/screenshot.png)
 
 ## Why?
 
@@ -216,6 +216,12 @@ The command receives all visible rows as one JSON object and answers with a `{"i
 The repo name comes from the `origin` remote as reported by Claude Code, so it stays correct inside worktrees; without an `origin` remote it falls back to the name of the directory that holds `.git`.
 
 Inside a linked git worktree the line ends with `wt:<name>`, using the worktree name reported by Claude Code. This needs Claude Code 2.1.97 or later.
+
+## Screenshot
+
+The screenshot at the top is generated, not captured. `mise run screenshot` builds the binary, pipes the example payloads in [`scripts/screenshot.sh`](scripts/screenshot.sh) into it and draws the output as a terminal window in `docs/screenshot.png`. Run it after changing what the statusline shows.
+
+It needs `jq`, `rsvg-convert` and `oxipng` (`brew install jq librsvg oxipng`; `optipng` works in place of `oxipng`), and downloads the Iosevka Term font once to `~/.cache/claude-code-statusline`. Payload timestamps are relative to the current time, so the same source gives the same image on every run.
 
 ## Releasing
 
