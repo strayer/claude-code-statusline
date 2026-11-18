@@ -8,7 +8,7 @@ Guidance for coding agents working in this repository.
 
 When a change alters anything visible in that image, remind the user that the screenshot should be regenerated, and say so in your final summary rather than leaving it implied. This applies to changes in:
 
-- what `renderOutput` in `main.go` or `renderTask` in `subagents.go` prints for the segments the examples show: text, order, separators, colors, truncation, the context bar
+- what `renderOutput` in `main.go`, `renderNarrow` in `narrow.go` or `renderTask` in `subagents.go` prints for the segments the examples show: text, order, separators, colors, truncation, the context bar
 - the example payloads or git setup in `scripts/screenshot.sh`
 - the theme, sizes or window style in `scripts/ansi2svg.jq`
 

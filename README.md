@@ -11,7 +11,7 @@
 
 A fast, dependency-free Go binary that renders a rich statusline for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Reimplemented from the original bash script by [jezweb/claude-skills](https://github.com/jezweb/claude-skills).
 
-![Three example renderings in a terminal window. Two statuslines, each with the model chip and directory on the first line, repo, branch and commit on the second, and context bar and metrics on the third: API usage with a pull request and session cost, and a subscription with session name, prompt cache and rate limits. Below them, the subagent panel with three rows that carry their own context bars, token counts, model names, an idle marker and a worktree marker](docs/screenshot.png)
+![Four example renderings in a terminal window. Two statuslines, each with the model chip and directory on the first line, repo, branch and commit on the second, and context bar and metrics on the third: API usage with a pull request and session cost, and a subscription with session name, prompt cache and rate limits. Then the two-line layout for narrow terminals, with repo, branch and pull request on the first line and model, context gauge, cache dot and rate limits on the second. Below them, the subagent panel with three rows that carry their own context bars, token counts, model names, an idle marker and a worktree marker](docs/screenshot.png)
 
 ## Why?
 
@@ -108,7 +108,7 @@ To also replace the rows in the [subagent panel](#subagent-panel), add:
 
 ## Output
 
-Up to three lines, grouped by concern:
+Up to three lines, grouped by concern. Terminals narrower than 60 columns get a [two-line layout](#narrow-terminals) instead.
 
 API usage:
 
@@ -146,7 +146,7 @@ my-repo:main | [abc1234] Last commit message
 - **Line 2** (git): Repo (linked to its web page), branch, dirty/ahead/behind, pull request (linked), commit hash + message, worktree — skipped outside git repos
 - **Line 3** (metrics): Context bar, percentage (with `!` warning above 200k tokens), free tokens, lines changed, duration, prompt cache with hit ratio and recent misses, cost (API) or rate limits with reset countdown (subscribers), spend limit (Claude apps gateway)
 
-The session name, directory and commit message are sized to the terminal width Claude Code passes in `COLUMNS`: the session name gives way before the directory, and the directory, then the session name and the commit message are dropped when there's no room for them. Without `COLUMNS` they fall back to fixed limits. Repo and PR links use OSC 8 hyperlinks (Cmd/Ctrl+click) in terminals that support them.
+The session name, directory and commit message are sized to the terminal width Claude Code passes in `COLUMNS`: the session name gives way before the directory, and the directory, then the session name and the commit message are dropped when there's no room for them. Without `COLUMNS` they fall back to fixed limits. The metrics line is not fitted to the width. Repo and PR links use OSC 8 hyperlinks (Cmd/Ctrl+click) in terminals that support them.
 
 Claude Code re-renders the statusline and strips these links when it doesn't detect hyperlink support, even if the terminal has it. This happens inside multiplexers that set their own `TERM_PROGRAM`, such as [herdr](https://github.com/herdrdev/herdr/issues/4748). Its own footer links can still work in fullscreen mode, so their being clickable doesn't mean statusline links will be. Set `FORCE_HYPERLINK=1` before starting Claude Code to override the detection, e.g. in fish:
 
@@ -155,6 +155,35 @@ if status --is-interactive; and test "$TERM_PROGRAM" = herdr
   set -gx FORCE_HYPERLINK 1
 end
 ```
+
+### Narrow terminals
+
+Below 60 columns, which covers a phone at about 50, the three lines become two:
+
+```
+my-repo:narrow-layout* | #14✓
+Fable 5.2 med | ▄ 42% | ● | 5h 65% | 7d 60%
+```
+
+- **Line 1** says where the session is: repo and branch with dirty/ahead/behind, the pull request as a linked `#14` (`!42` for a merge request) with `✓` or `✗` for its review state, and `wt` in a worktree. The branch is shortened to fit, and on very narrow terminals the repo name goes. Outside a git repository the line shows the directory name.
+- **Line 2** carries the model with its effort, `fast` and the agent, then the gauges.
+
+The gauges stay quiet while things are fine and gain detail when something needs attention:
+
+| Shown | Meaning |
+| --- | --- |
+| `▄ 42%` | Context used. The one-cell gauge turns yellow from 70% and red from 90% |
+| `▇ 140k free` | From 80% used, the tokens left instead of the percentage |
+| `●` | The prompt cache is warm |
+| `→14:32` | The cache expires within five minutes, at this time |
+| `cold` | The cache has expired |
+| `✗` after the cache | A cache miss in the last two minutes |
+| `5h 65%` | Rate limit remaining |
+| `7d 22% (4d)` | At 30% or less, the time to reset as well |
+
+API usage shows the session cost in place of the rate limits. When a line is still too long, its least important parts are dropped first: the cache dot, reset times, `fast`, the agent, rate limits that are fine, the effort.
+
+Left out because Claude Code shows them itself or they can't be acted on from a phone: session name, directory, commit, output style, lines changed, duration, cache hit ratio and the cause of a cache miss.
 
 ### Model chip
 

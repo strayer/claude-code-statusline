@@ -85,10 +85,13 @@ project() {
   g -C "$dir" commit -q --allow-empty -m "$3"
 }
 
-# run [args]: the binary as Claude Code starts it, in the example's environment
+# run [args]: the binary as Claude Code starts it, in the example's
+# environment. $columns is the terminal width Claude Code reports, empty for
+# none.
+columns=""
 run() {
   env -i PATH="$PATH" HOME="$home" TZ=UTC GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-    "$bin" ${1+"$@"}
+    COLUMNS="$columns" "$bin" ${1+"$@"}
 }
 
 # The binary prints nothing for a payload it can't parse; fail instead of
@@ -157,6 +160,30 @@ EOF
   "rate_limits": {
     "five_hour": {"used_percentage": 20, "resets_at": $((now + 3 * 3600 + 1800))},
     "seven_day": {"used_percentage": 78, "resets_at": $((now + 4 * 86400 + 1800))}
+  }
+}
+EOF
+
+  echo
+  heading "Narrow terminal, 50 columns"
+  project narrow narrow-layout "Add a layout for narrow terminals"
+  touch "$dir/notes.md"
+  columns=50 statusline <<EOF
+{
+  "model": {"display_name": "Fable 5.2"},
+  "effort": {"level": "medium"},
+  "session_name": "responsive statusline",
+  "workspace": {
+    "current_dir": "$dir",
+    "repo": {"host": "github.com", "owner": "acme", "name": "my-repo"}
+  },
+  "pr": {"number": 14, "review_state": "approved", "url": "https://github.com/acme/my-repo/pull/14"},
+  "context_window": {"context_window_size": 1000000, "used_percentage": 42, "remaining_percentage": 58},
+  "cost": {"total_duration_ms": 2700000, "total_lines_added": 200, "total_lines_removed": 50},
+  "prompt_cache": {"warm": true, "caching_observed": true, "expires_at": $cache_expiry, "hit_ratio": 0.91},
+  "rate_limits": {
+    "five_hour": {"used_percentage": 35, "resets_at": $((now + 3 * 3600 + 1800))},
+    "seven_day": {"used_percentage": 40, "resets_at": $((now + 4 * 86400 + 1800))}
   }
 }
 EOF

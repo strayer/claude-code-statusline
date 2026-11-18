@@ -603,6 +603,10 @@ func nameAndPathWidths(free int, name, path string) (nameLen, pathLen int) {
 }
 
 func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir, sandbox string, cols int) {
+	if cols > 0 && cols < narrowBelow {
+		renderNarrow(w, input, git, now, sandbox, cols)
+		return
+	}
 
 	// ── Line 1: sbx[id] | [Model:style:effort] | fast | @agent | name | dir ──
 	var line strings.Builder
@@ -856,38 +860,41 @@ func renderRateLimits(w io.Writer, rl *RateLimits, now time.Time) {
 	}
 }
 
-// formatRateWindow shows the remaining percentage and the time to reset. A
-// spend limit can run past 100%, which shows as the overrun instead.
+// formatRateWindow shows the remaining percentage and the time to reset.
 func formatRateWindow(rw *RateWindow, now time.Time) string {
-	remaining := 100 - rw.UsedPercentage
+	return rateRemaining(rw) + rateReset(rw, now)
+}
 
-	var s string
+// rateRemaining is the remaining percentage of a rate window, colored by how
+// little is left. A spend limit can run past 100%, which shows as the overrun
+// instead.
+func rateRemaining(rw *RateWindow) string {
+	remaining := 100 - rw.UsedPercentage
 	switch {
 	case remaining < 0:
-		s = fmt.Sprintf("%s%.0f%% over%s", red, -remaining, reset)
+		return fmt.Sprintf("%s%.0f%% over%s", red, -remaining, reset)
 	case remaining <= 10:
-		s = fmt.Sprintf("%s%.0f%%%s", red, remaining, reset)
+		return fmt.Sprintf("%s%.0f%%%s", red, remaining, reset)
 	case remaining <= 30:
-		s = fmt.Sprintf("%s%.0f%%%s", yellow, remaining, reset)
+		return fmt.Sprintf("%s%.0f%%%s", yellow, remaining, reset)
 	default:
-		s = fmt.Sprintf("%s%.0f%%%s", green, remaining, reset)
+		return fmt.Sprintf("%s%.0f%%%s", green, remaining, reset)
 	}
+}
 
-	if rw.ResetsAt > 0 {
-		mins := int(rw.ResetsAt - now.Unix())
-		if mins < 0 {
-			mins = 0
-		}
-		mins /= 60
-		switch {
-		case mins >= 1440:
-			s += fmt.Sprintf(" %s(%dd)%s", dim, mins/1440, reset)
-		case mins >= 60:
-			s += fmt.Sprintf(" %s(%dh)%s", dim, mins/60, reset)
-		default:
-			s += fmt.Sprintf(" %s(%dm)%s", dim, mins, reset)
-		}
+// rateReset is the time until a rate window resets, with a leading space, or
+// "" when the reset time is unknown.
+func rateReset(rw *RateWindow, now time.Time) string {
+	if rw.ResetsAt <= 0 {
+		return ""
 	}
-
-	return s
+	mins := max(int(rw.ResetsAt-now.Unix()), 0) / 60
+	switch {
+	case mins >= 1440:
+		return fmt.Sprintf(" %s(%dd)%s", dim, mins/1440, reset)
+	case mins >= 60:
+		return fmt.Sprintf(" %s(%dh)%s", dim, mins/60, reset)
+	default:
+		return fmt.Sprintf(" %s(%dm)%s", dim, mins, reset)
+	}
 }
