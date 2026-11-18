@@ -1062,6 +1062,71 @@ func TestColumnsFit(t *testing.T) {
 	})
 }
 
+// Lines one and two must fit every width at which their fixed parts fit (45
+// columns for this input),
+// whatever the lengths of the session name, directory and commit subject.
+func TestLinesFitAnyWidth(t *testing.T) {
+	git := GitInfo{
+		RepoName:      "repo",
+		Branch:        "main",
+		ShortHash:     "abc1234",
+		CommitMessage: strings.Repeat("word ", 14),
+	}
+	names := []string{"", "short", "Zig vs Rust rebuild benchmark", strings.Repeat("会話", 20)}
+	dirs := []string{"", "/home/user/p", "/home/user/dev/claude-code-statusline", "/home/user/" + strings.Repeat("deep/", 20) + "project"}
+	worktrees := []string{"", "feature-xyz"}
+
+	for _, name := range names {
+		for _, dir := range dirs {
+			for _, wt := range worktrees {
+				in := defaultInput()
+				in.Vim.Mode = "INSERT"
+				in.SessionName = name
+				in.Workspace.CurrentDir = dir
+				in.Workspace.GitWorktree = wt
+				for cols := 45; cols <= 200; cols++ {
+					lines := strings.Split(renderCols(in, git, cols), "\n")[:2]
+					for i, l := range lines {
+						if w := visibleWidth(l); w > cols-widthReserve {
+							t.Fatalf("name=%q dir=%q wt=%q cols=%d: line %d is %d wide, limit %d: %q",
+								name, dir, wt, cols, i+1, w, cols-widthReserve, l)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestNameAndPathWidths(t *testing.T) {
+	const name, path = "Zig vs Rust rebuild benchmark", "~/dev/claude-code-statusline"
+	tests := []struct {
+		desc              string
+		free              int
+		name, path        string
+		wantName, wantDir int
+	}{
+		{"both fit, path takes the rest", 80, name, path, 46, 45},
+		{"name shrinks first", 50, name, path, 16, 28},
+		{"path shrinks once the name is at its minimum", 40, name, path, 16, 18},
+		{"path goes when both minimums don't fit", 33, name, path, 30, 0},
+		{"name takes what is left", 20, name, path, 17, 0},
+		{"name goes when nothing is left", 6, name, path, 0, 0},
+		{"line already too long", -5, name, path, 0, 0},
+		{"path alone", 20, "", path, 0, 17},
+		{"path alone without room", 10, "", path, 0, 0},
+		{"short path needs only its own width", 25, name, "~/p", 16, 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			gotName, gotDir := nameAndPathWidths(tt.free, tt.name, tt.path)
+			if gotName != tt.wantName || gotDir != tt.wantDir {
+				t.Errorf("nameAndPathWidths(%d) = %d, %d, want %d, %d", tt.free, gotName, gotDir, tt.wantName, tt.wantDir)
+			}
+		})
+	}
+}
+
 func TestTruncateWidth(t *testing.T) {
 	tests := []struct {
 		name string

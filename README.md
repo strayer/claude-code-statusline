@@ -148,7 +148,7 @@ my-repo:main | [abc1234] Last commit message
 - **Line 2** (git): Repo (linked to its web page), branch, dirty/ahead/behind, pull request (linked), commit hash + message, worktree — skipped outside git repos
 - **Line 3** (metrics): Context bar, percentage (with `!` warning above 200k tokens), free tokens, lines changed, duration, prompt cache with hit ratio and recent misses, cost (API) or rate limits with reset countdown (subscribers), spend limit (Claude apps gateway)
 
-The session name, directory and commit message are sized to the terminal width Claude Code passes in `COLUMNS`: the session name gives way before the directory, and the commit message is dropped when there's no room. Without `COLUMNS` they fall back to fixed limits. Repo and PR links use OSC 8 hyperlinks (Cmd/Ctrl+click) in terminals that support them.
+The session name, directory and commit message are sized to the terminal width Claude Code passes in `COLUMNS`: the session name gives way before the directory, and the directory, then the session name and the commit message are dropped when there's no room for them. Without `COLUMNS` they fall back to fixed limits. Repo and PR links use OSC 8 hyperlinks (Cmd/Ctrl+click) in terminals that support them.
 
 Claude Code re-renders the statusline and strips these links when it doesn't detect hyperlink support, even if the terminal has it. This happens inside multiplexers that set their own `TERM_PROGRAM`, such as [herdr](https://github.com/herdrdev/herdr/issues/4748). Its own footer links can still work in fullscreen mode, so their being clickable doesn't mean statusline links will be. Set `FORCE_HYPERLINK=1` before starting Claude Code to override the detection, e.g. in fish:
 

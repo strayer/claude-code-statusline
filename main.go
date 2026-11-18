@@ -557,13 +557,57 @@ func visibleWidth(s string) int {
 // row padding, so width-sized lines don't wrap.
 const widthReserve = 4
 
-// budget returns the characters left on a line of width cols after used, or -1
-// when the width is unknown.
-func budget(cols, used int) int {
-	if cols <= 0 {
-		return -1
-	}
+// room returns the columns left on a line of width cols after used. It is
+// negative when the line is already too long, and only meaningful when the
+// width is known (cols > 0).
+func room(cols, used int) int {
 	return cols - widthReserve - used
+}
+
+// sepWidth is the width of the " | " between segments.
+const sepWidth = 3
+
+const (
+	// defaultNameLen caps the session name when the terminal width is unknown.
+	defaultNameLen = 40
+	// minNameLen and minPathLen are what the session name and the directory
+	// keep while the other one shrinks.
+	minNameLen = 16
+	minPathLen = 12
+	// minTruncated is the narrowest a truncated text is still worth showing.
+	minTruncated = 4
+)
+
+// nameAndPathWidths sizes the session name and the directory for a line with
+// free columns left. The name takes the room the directory leaves at its
+// default length, and the directory only shrinks once the name is at its
+// minimum. When both minimums don't fit, the directory goes and the name gets
+// the line. Zero means the field is not shown.
+func nameAndPathWidths(free int, name, path string) (nameLen, pathLen int) {
+	if path != "" {
+		forPath := free - sepWidth
+		if name != "" {
+			forPath -= sepWidth + min(minNameLen, visibleWidth(name))
+		}
+		if forPath < min(minPathLen, visibleWidth(path)) {
+			path = ""
+		}
+	}
+	if name != "" {
+		nameLen = free - sepWidth
+		if path != "" {
+			nameLen = max(nameLen-sepWidth-visibleWidth(path), minNameLen)
+		}
+		if nameLen < min(minTruncated, visibleWidth(name)) {
+			nameLen = 0
+		} else {
+			free -= sepWidth + min(nameLen, visibleWidth(name))
+		}
+	}
+	if path != "" {
+		pathLen = free - sepWidth
+	}
+	return nameLen, pathLen
 }
 
 func vimModeColor(mode string) string {
@@ -606,27 +650,20 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 		fmt.Fprintf(&line, " | "+magenta+"@%s"+reset, input.Agent.Name)
 	}
 
-	// The session name takes the room the directory leaves at its default
-	// length; the directory only shrinks once the name is at its minimum.
-	if name := input.SessionName; name != "" {
-		const defaultNameLen, minNameLen = 40, 16
-		maxLen := defaultNameLen
-		if b := budget(cols, visibleWidth(line.String())+len(" | ")); b >= 0 {
-			if dir := input.Workspace.CurrentDir; dir != "" {
-				b -= len(" | ") + visibleWidth(shortenPath(dir, homeDir, defaultPathLen))
-			}
-			maxLen = max(b, minNameLen)
+	name, dir := input.SessionName, input.Workspace.CurrentDir
+	nameLen, pathLen := defaultNameLen, defaultPathLen
+	if cols > 0 {
+		path := ""
+		if dir != "" {
+			path = shortenPath(dir, homeDir, defaultPathLen)
 		}
-		line.WriteString(" | " + bold + truncateWidth(name, maxLen) + reset)
+		nameLen, pathLen = nameAndPathWidths(room(cols, visibleWidth(line.String())), name, path)
 	}
-
-	if dir := input.Workspace.CurrentDir; dir != "" {
-		maxLen := defaultPathLen
-		if b := budget(cols, visibleWidth(line.String())+len(" | ")); b >= 0 {
-			// Never squeeze the path below a recognizable tail.
-			maxLen = max(b, 12)
-		}
-		line.WriteString(" | " + shortenPath(dir, homeDir, maxLen))
+	if name != "" && nameLen > 0 {
+		line.WriteString(" | " + bold + truncateWidth(name, nameLen) + reset)
+	}
+	if dir != "" && pathLen > 0 {
+		line.WriteString(" | " + shortenPath(dir, homeDir, pathLen))
 	}
 
 	fmt.Fprintln(w, line.String())
@@ -673,10 +710,10 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 		if git.ShortHash != "" {
 			line.WriteString(" | " + dim + "[" + reset + yellowDim + git.ShortHash + reset + dim + "]" + reset)
 			if msg := git.CommitMessage; msg != "" {
-				b := budget(cols, visibleWidth(line.String())+visibleWidth(suffix)+1)
 				const minMessageLen = 10
+				b := room(cols, visibleWidth(line.String())+visibleWidth(suffix)+1)
 				switch {
-				case b < 0:
+				case cols <= 0:
 					line.WriteString(" " + msg)
 				case b >= minMessageLen:
 					line.WriteString(" " + truncateWidth(msg, b))
