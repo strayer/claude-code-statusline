@@ -1051,10 +1051,12 @@ func TestColumnsFit(t *testing.T) {
 		}
 	})
 
-	t.Run("narrow terminal drops the commit message", func(t *testing.T) {
-		line2 := strings.Split(renderCols(in, git, 30), "\n")[1]
-		if strings.Contains(line2, "word") {
-			t.Errorf("expected message dropped, got: %q", line2)
+	t.Run("commit message is dropped without room", func(t *testing.T) {
+		long := git
+		long.Branch = strings.Repeat("b", 30)
+		line2 := strings.Split(renderCols(in, long, narrowBelow), "\n")[1]
+		if !strings.Contains(line2, "abc1234") || strings.Contains(line2, "word") {
+			t.Errorf("expected the hash without the message, got: %q", line2)
 		}
 	})
 
