@@ -1104,6 +1104,139 @@ func TestLinesFitAnyWidth(t *testing.T) {
 	}
 }
 
+// wideEverything is a payload with every segment of the wide layout set.
+func wideEverything() (Input, GitInfo) {
+	in := defaultInput()
+	in.Model.DisplayName = "Opus 5.5"
+	in.OutputStyle.Name = "concise"
+	in.Effort.Level = "xhigh"
+	in.FastMode = true
+	in.Agent.Name = "reviewer"
+	in.SessionName = "a rather long session name"
+	in.Workspace.CurrentDir = "/home/user/dev/claude-code-statusline"
+	in.Workspace.GitWorktree = "feature-xyz"
+	in.Workspace.Repo = RepoInfo{Host: "github.com", Owner: "acme", Name: "claude-code-statusline"}
+	in.PR = &PRInfo{Number: 44, ReviewState: "draft", URL: "https://github.com/acme/claude-code-statusline/pull/44"}
+	in.Exceeds200k = true
+	in.ContextWindow.UsedPercentage, in.ContextWindow.RemainingPercentage = 30, 70
+	in.Cost = CostInfo{TotalCostUSD: 12.5, TotalDurationMS: 5400000, TotalLinesAdded: 10622, TotalLinesRemoved: 2}
+	in.PromptCache = &PromptCache{
+		Warm: true, CachingObserved: true, ExpiresAt: testNow.Unix() + 3000,
+		HitRatio: new(0.97), LastMissAt: testNow.Unix() - 30,
+		LastMissCause: &MissCause{Causes: []string{"tools_changed"}},
+	}
+	in.RateLimits = &RateLimits{
+		FiveHour:   &RateWindow{UsedPercentage: 35, ResetsAt: testNow.Unix() + 7200},
+		SevenDay:   &RateWindow{UsedPercentage: 7, ResetsAt: testNow.Unix() + 5*86400},
+		SpendLimit: &RateWindow{UsedPercentage: 130, ResetsAt: testNow.Unix() + 86400},
+	}
+	git := GitInfo{
+		Branch: "feature/a-branch-name-that-goes-on-and-on", ShortHash: "abc1234",
+		Dirty: true, Ahead: "2", Behind: "1", CommitMessage: strings.TrimSpace(strings.Repeat("word ", 14)),
+	}
+	return in, git
+}
+
+// All three lines of the wide layout fit from the breakpoint up, even with
+// every segment set.
+func TestWideFitsAnyWidth(t *testing.T) {
+	in, git := wideEverything()
+	for cols := narrowBelow; cols <= 250; cols++ {
+		var buf strings.Builder
+		renderOutput(&buf, in, git, testNow, "/home/user", "sbx[vm-1234]", cols)
+		lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
+		if len(lines) != 3 {
+			t.Fatalf("cols=%d: %d lines, want 3", cols, len(lines))
+		}
+		for i, l := range lines {
+			if w := visibleWidth(l); w > cols-widthReserve {
+				t.Fatalf("cols=%d: line %d is %d wide, limit %d: %q", cols, i+1, w, cols-widthReserve, plain(l))
+			}
+		}
+	}
+}
+
+func TestWideDropsByPriority(t *testing.T) {
+	in, git := wideEverything()
+	lines := func(cols int) []string {
+		var buf strings.Builder
+		renderOutput(&buf, in, git, testNow, "/home/user", "sbx[vm-1234]", cols)
+		return strings.Split(strings.TrimSuffix(plain(buf.String()), "\n"), "\n")
+	}
+
+	t.Run("nothing is dropped without a width", func(t *testing.T) {
+		got := lines(0)
+		want := []string{
+			"sbx[vm-1234] | [Opus 5.5:concise:xhigh] | fast | @reviewer | a rather long session name | ~/dev/claude-code-statusline",
+			"claude-code-statusline:feature/a-branch-name-that-goes-on-and-on *↑2↓1 | PR#44 draft | [abc1234] " + strings.TrimSpace(git.CommitMessage) + " | wt:feature-xyz",
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("line %d:\n got %q\nwant %q", i+1, got[i], want[i])
+			}
+		}
+		for _, part := range []string{"30%!", "140k free", "+10622/-2", "1h 30m", "cache→", " 97% ✗tools_changed", "5h: 65% (2h)", "7d: 93% (5d)", "spend: 30% over (1d)"} {
+			if !strings.Contains(got[2], part) {
+				t.Errorf("expected %q on line 3, got: %q", part, got[2])
+			}
+		}
+	})
+
+	t.Run("metrics line", func(t *testing.T) {
+		tests := []struct {
+			cols int
+			want string
+		}{
+			{150, "30%! | 140k free | +10622/-2 | 1h 30m | cache→DROP 97% ✗tools_changed | 5h: 65% (2h) | 7d: 93% (5d) | spend: 30% over (1d)"},
+			{100, "30%! | cache→DROP 97% | 5h: 65% (2h) | 7d: 93% (5d) | spend: 30% over (1d)"},
+			{60, "30%! | 5h: 65% (2h) | spend: 30% over"},
+		}
+		for _, tt := range tests {
+			got := lines(tt.cols)[2]
+			// Cut the bar and the expiry time, which depends on the time zone.
+			got = got[strings.Index(got, "] ")+2:]
+			if i := strings.Index(got, "cache→"); i >= 0 {
+				got = got[:i] + "cache→DROP" + got[i+len("cache→00:00"):]
+			}
+			if got != tt.want {
+				t.Errorf("cols=%d:\n got %q\nwant %q", tt.cols, got, tt.want)
+			}
+		}
+	})
+
+	t.Run("git line", func(t *testing.T) {
+		tests := []struct {
+			cols int
+			want string
+		}{
+			{120, "claude-code-statusline:feature/a-branch-name-that-goes-on-and-on *↑2↓1 | PR#44 draft | [abc1234] | wt:feature-xyz"},
+			{100, "claude-code-statusline:feature/a-branch-name-t… *↑2↓1 | PR#44 draft | [abc1234] | wt:feature-xyz"},
+			{80, "claude-code-statusline:feature/a-branch-name-that-goes-… *↑2↓1 | PR#44 draft"},
+			{60, "claude-code-statusline:feature/a-branch-name-that… *↑2↓1"},
+		}
+		for _, tt := range tests {
+			if got := lines(tt.cols)[1]; got != tt.want {
+				t.Errorf("cols=%d:\n got %q\nwant %q", tt.cols, got, tt.want)
+			}
+		}
+	})
+
+	t.Run("session line", func(t *testing.T) {
+		tests := []struct {
+			cols int
+			want string
+		}{
+			{100, "sbx[vm-1234] | [Opus 5.5:concise:xhigh] | fast | @reviewer | a rather long s… | …code-statusline"},
+			{60, "sbx[vm-1234] | [Opus 5.5:concise:xhigh] | @reviewer"},
+		}
+		for _, tt := range tests {
+			if got := lines(tt.cols)[0]; got != tt.want {
+				t.Errorf("cols=%d:\n got %q\nwant %q", tt.cols, got, tt.want)
+			}
+		}
+	})
+}
+
 func TestNameAndPathWidths(t *testing.T) {
 	const name, path = "Zig vs Rust rebuild benchmark", "~/dev/claude-code-statusline"
 	tests := []struct {

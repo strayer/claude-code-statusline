@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -549,15 +550,11 @@ func visibleWidth(s string) int {
 // row padding, so width-sized lines don't wrap.
 const widthReserve = 4
 
-// room returns the columns left on a line of width cols after used. It is
-// negative when the line is already too long, and only meaningful when the
-// width is known (cols > 0).
-func room(cols, used int) int {
-	return cols - widthReserve - used
-}
+// wideSep separates the segments of the wide layout.
+const wideSep = " | "
 
-// sepWidth is the width of the " | " between segments.
-const sepWidth = 3
+// sepWidth is the width of wideSep.
+const sepWidth = len(wideSep)
 
 const (
 	// defaultNameLen caps the session name when the terminal width is unknown.
@@ -608,12 +605,17 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 		return
 	}
 
-	// ── Line 1: sbx[id] | [Model:style:effort] | fast | @agent | name | dir ──
-	var line strings.Builder
-	if sandbox != "" {
-		line.WriteString(yellow + sandbox + reset + " | ")
+	// Without a known width nothing is dropped or shortened to fit.
+	limit := math.MaxInt32
+	if cols > 0 {
+		limit = cols - widthReserve
 	}
 
+	// ── Line 1: sbx[id] | [Model:style:effort] | fast | @agent | name | dir ──
+	var segs []segment
+	if sandbox != "" {
+		segs = append(segs, segment{text: yellow + sandbox + reset, drop: 1})
+	}
 	chip := strings.TrimPrefix(input.Model.DisplayName, "Claude ")
 	if input.OutputStyle.Name != "" && input.OutputStyle.Name != "default" {
 		chip += ":" + input.OutputStyle.Name
@@ -621,16 +623,18 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 	if input.Effort.Level != "" {
 		chip += ":" + input.Effort.Level
 	}
-	fmt.Fprintf(&line, cyan+"[%s]"+reset, chip)
-
+	segs = append(segs, segment{sep: wideSep, text: cyan + "[" + chip + "]" + reset})
 	if input.FastMode {
-		line.WriteString(" | " + yellow + "fast" + reset)
+		segs = append(segs, segment{sep: wideSep, text: yellow + "fast" + reset, drop: 3})
 	}
-
 	if input.Agent.Name != "" {
-		fmt.Fprintf(&line, " | "+magenta+"@%s"+reset, input.Agent.Name)
+		segs = append(segs, segment{sep: wideSep, text: magenta + "@" + input.Agent.Name + reset, drop: 2})
 	}
+	var line strings.Builder
+	line.WriteString(fitLine(segs, limit))
 
+	// The session name and the directory share what the segments before
+	// them leave.
 	name, dir := input.SessionName, input.Workspace.CurrentDir
 	nameLen, pathLen := defaultNameLen, defaultPathLen
 	if cols > 0 {
@@ -638,15 +642,14 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 		if dir != "" {
 			path = shortenPath(dir, homeDir, defaultPathLen)
 		}
-		nameLen, pathLen = nameAndPathWidths(room(cols, visibleWidth(line.String())), name, path)
+		nameLen, pathLen = nameAndPathWidths(limit-visibleWidth(line.String()), name, path)
 	}
 	if name != "" && nameLen > 0 {
-		line.WriteString(" | " + bold + truncateWidth(name, nameLen) + reset)
+		line.WriteString(wideSep + bold + truncateWidth(name, nameLen) + reset)
 	}
 	if dir != "" && pathLen > 0 {
-		line.WriteString(" | " + shortenPath(dir, homeDir, pathLen))
+		line.WriteString(wideSep + shortenPath(dir, homeDir, pathLen))
 	}
-
 	fmt.Fprintln(w, line.String())
 
 	// ── Line 2: repo:branch status | PR#n | [hash] message | wt ──
@@ -655,16 +658,10 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 		repoName = git.RepoName
 	}
 	if repoName != "" || git.Branch != "" {
-		line.Reset()
-		if repoName != "" {
-			line.WriteString(green + hyperlink(input.Workspace.Repo.webURL(), repoName) + reset)
-		}
-		if git.Branch != "" {
-			if repoName != "" {
-				line.WriteString(":")
-			}
-			line.WriteString(blue + git.Branch + reset)
-		}
+		// A long branch keeps this much while the commit, the worktree and
+		// the pull request can go instead.
+		const keepBranch = 24
+		segs = []segment{repoBranchSegment(wideSep, repoName, input.Workspace.Repo.webURL(), git.Branch, keepBranch)}
 
 		gitStatus := ""
 		if git.Dirty {
@@ -677,80 +674,80 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 			gitStatus += "↓" + git.Behind
 		}
 		if gitStatus != "" {
-			line.WriteString(" " + red + gitStatus + reset)
+			segs = append(segs, segment{sep: " ", text: red + gitStatus + reset})
 		}
+		segs = append(segs, segment{sep: wideSep, text: widePR(input.PR), drop: 1})
 
-		renderPR(&line, input.PR)
-
-		// Claude Code reports the worktree name for any linked worktree.
-		suffix := ""
-		if wt := input.Workspace.GitWorktree; wt != "" {
-			suffix = " | " + yellow + "wt:" + wt + reset
-		}
-
+		hash := -1
 		if git.ShortHash != "" {
-			line.WriteString(" | " + dim + "[" + reset + yellowDim + git.ShortHash + reset + dim + "]" + reset)
-			if msg := git.CommitMessage; msg != "" {
-				const minMessageLen = 10
-				b := room(cols, visibleWidth(line.String())+visibleWidth(suffix)+1)
-				switch {
-				case cols <= 0:
-					line.WriteString(" " + msg)
-				case b >= minMessageLen:
-					line.WriteString(" " + truncateWidth(msg, b))
-				}
+			hash = len(segs)
+			segs = append(segs, segment{sep: wideSep, text: dim + "[" + reset + yellowDim + git.ShortHash + reset + dim + "]" + reset, drop: 3})
+		}
+		// Claude Code reports the worktree name for any linked worktree.
+		if wt := input.Workspace.GitWorktree; wt != "" {
+			segs = append(segs, segment{sep: wideSep, text: yellow + "wt:" + wt + reset, drop: 2})
+		}
+
+		// The commit subject takes the room that is left once everything
+		// else is placed, and follows the hash.
+		const minMessageLen = 10
+		if msg := git.CommitMessage; hash >= 0 && msg != "" {
+			free := limit - visibleWidth(fitLine(segs, limit)) - 1
+			if cols <= 0 {
+				segs[hash].text += " " + msg
+			} else if free >= minMessageLen {
+				segs[hash].text += " " + truncateWidth(msg, free)
 			}
 		}
-
-		line.WriteString(suffix)
-		fmt.Fprintln(w, line.String())
+		fmt.Fprintln(w, fitLine(segs, limit))
 	}
 
-	// ── Line 3: [braille bar] pct% | Nk free | +N/-N | Xh Ym | $cost ──
+	// ── Line 3: [braille bar] pct% | Nk free | +N/-N | Xh Ym | cache | $cost | limits ──
 	usagePct := input.ContextWindow.UsedPercentage
 	remainPct := input.ContextWindow.RemainingPercentage
 	totalTokens := input.ContextWindow.ContextWindowSize
 	freeK := float64(totalTokens) * remainPct / 100.0 / 1000.0
 
-	fmt.Fprint(w, contextBar(usagePct, 15)+" ")
-
+	pct := fmt.Sprintf(bold+"%.0f%%"+reset, usagePct)
 	if input.Exceeds200k {
-		fmt.Fprintf(w, yellow+"%.0f%%!"+reset, usagePct)
-	} else {
-		fmt.Fprintf(w, bold+"%.0f%%"+reset, usagePct)
+		pct = fmt.Sprintf(yellow+"%.0f%%!"+reset, usagePct)
+	}
+	segs = []segment{
+		{text: contextBar(usagePct, 15) + " " + pct},
+		{sep: wideSep, text: fmt.Sprintf(green+"%.0fk free"+reset, freeK), drop: 7},
 	}
 
-	fmt.Fprintf(w, " | "+green+"%.0fk free"+reset, freeK)
-
 	if input.Cost.TotalLinesAdded > 0 || input.Cost.TotalLinesRemoved > 0 {
-		fmt.Fprintf(w, " | "+greenDim+"+%d"+reset+"/"+redDim+"-%d"+reset, input.Cost.TotalLinesAdded, input.Cost.TotalLinesRemoved)
+		segs = append(segs, segment{sep: wideSep, drop: 9, text: fmt.Sprintf(greenDim+"+%d"+reset+"/"+redDim+"-%d"+reset, input.Cost.TotalLinesAdded, input.Cost.TotalLinesRemoved)})
 	}
 
 	if input.Cost.TotalDurationMS > 0 {
 		d := time.Duration(input.Cost.TotalDurationMS) * time.Millisecond
 		h := int(d.Hours())
 		m := int(d.Minutes()) % 60
+		text := fmt.Sprintf("%dm", m)
 		if h > 0 {
-			fmt.Fprintf(w, " | %dh %dm", h, m)
-		} else {
-			fmt.Fprintf(w, " | %dm", m)
+			text = fmt.Sprintf("%dh %dm", h, m)
 		}
+		segs = append(segs, segment{sep: wideSep, text: text, drop: 8})
 	}
 
-	renderPromptCache(w, input.PromptCache, now)
+	segs = append(segs, promptCacheSegments(input.PromptCache, now)...)
 
 	// Subscribers see plan windows instead of an estimated cost. A gateway
 	// spend limit alone does not replace the cost.
 	rl := input.RateLimits
 	subscriber := rl != nil && (rl.FiveHour != nil || rl.SevenDay != nil)
 	if !subscriber && input.Cost.TotalCostUSD > 0 {
-		fmt.Fprintf(w, " | "+yellowDim+"$%.2f"+reset, input.Cost.TotalCostUSD)
+		segs = append(segs, segment{sep: wideSep, text: fmt.Sprintf(yellowDim+"$%.2f"+reset, input.Cost.TotalCostUSD), drop: 3})
 	}
 	if rl != nil {
-		renderRateLimits(w, rl, now)
+		segs = append(segs, rateWindowSegments("5h", rl.FiveHour, now)...)
+		segs = append(segs, rateWindowSegments("7d", rl.SevenDay, now)...)
+		segs = append(segs, rateWindowSegments("spend", rl.SpendLimit, now)...)
 	}
 
-	fmt.Fprintln(w)
+	fmt.Fprintln(w, fitLine(segs, limit))
 }
 
 // contextBar draws usagePct as a bracketed bar of chars braille cells, each
@@ -784,11 +781,11 @@ func contextBar(usagePct float64, chars int) string {
 	return b.String()
 }
 
-// renderPR appends the open pull request (or GitLab merge request), colored by
-// review state.
-func renderPR(w io.Writer, pr *PRInfo) {
+// widePR is the open pull request (or GitLab merge request), linked and
+// colored by review state, or "" when there is none.
+func widePR(pr *PRInfo) string {
 	if pr == nil || pr.Number == 0 {
-		return
+		return ""
 	}
 
 	label := fmt.Sprintf("PR#%d", pr.Number)
@@ -807,7 +804,7 @@ func renderPR(w io.Writer, pr *PRInfo) {
 		color, marker = dim, " draft"
 	}
 
-	fmt.Fprintf(w, " | %s%s%s%s", color, hyperlink(pr.URL, label), marker, reset)
+	return color + hyperlink(pr.URL, label) + marker + reset
 }
 
 // recentMiss is how long a diagnosed cache miss stays on the statusline. The
@@ -815,54 +812,59 @@ func renderPR(w io.Writer, pr *PRInfo) {
 // was one, so a short window approximates "the last request missed".
 const recentMiss = 2 * time.Minute
 
-// renderPromptCache shows when a warm cache goes cold. The statusline only
+// promptCacheSegments shows when a warm cache goes cold. The statusline only
 // re-runs on events, so it shows the expiry as a clock time rather than a
 // countdown that would freeze while the session is idle. Claude Code re-runs
 // it at expiry, which flips the segment to cold. The session hit ratio
 // follows, and a fresh miss adds its cause.
-func renderPromptCache(w io.Writer, pc *PromptCache, now time.Time) {
+func promptCacheSegments(pc *PromptCache, now time.Time) []segment {
 	if pc == nil || !pc.CachingObserved {
-		return
+		return nil
 	}
+	state := dim + "cache cold" + reset
 	if pc.Warm && pc.ExpiresAt > now.Unix() {
 		expires := time.Unix(pc.ExpiresAt, 0)
 		color := greenDim
 		if expires.Sub(now) <= 5*time.Minute {
 			color = yellowDim
 		}
-		fmt.Fprintf(w, " | %scache→%s%s", color, expires.Local().Format("15:04"), reset)
-	} else {
-		fmt.Fprint(w, " | "+dim+"cache cold"+reset)
+		state = color + "cache→" + expires.Local().Format("15:04") + reset
 	}
+	segs := []segment{{sep: wideSep, text: state, drop: 4}}
 
+	// The cause is the more useful of the two details, so the ratio goes
+	// first.
+	var ratio, cause string
 	if pc.HitRatio != nil {
-		fmt.Fprintf(w, " %s%.0f%%%s", dim, *pc.HitRatio*100, reset)
+		ratio = fmt.Sprintf(" %s%.0f%%%s", dim, *pc.HitRatio*100, reset)
 	}
-
 	if pc.LastMissAt > 0 && now.Sub(time.Unix(pc.LastMissAt, 0)) < recentMiss {
-		cause := "miss"
+		cause = "miss"
 		if pc.LastMissCause != nil && len(pc.LastMissCause.Causes) > 0 {
 			cause = strings.Join(pc.LastMissCause.Causes, "+")
 		}
-		fmt.Fprintf(w, " %s✗%s%s", yellow, cause, reset)
+		cause = fmt.Sprintf(" %s✗%s%s", yellow, cause, reset)
 	}
+	return append(segs,
+		segment{text: ratio, drop: 10, attached: true},
+		segment{text: cause, drop: 6, attached: true})
 }
 
-func renderRateLimits(w io.Writer, rl *RateLimits, now time.Time) {
-	if rl.FiveHour != nil {
-		fmt.Fprintf(w, " | 5h: %s", formatRateWindow(rl.FiveHour, now))
+// rateWindowSegments is a rate window as "5h: 80% (3h)": the remaining
+// percentage, then the time to reset, which is dropped before the window. A
+// window that is running low outlasts the others.
+func rateWindowSegments(label string, rw *RateWindow, now time.Time) []segment {
+	if rw == nil {
+		return nil
 	}
-	if rl.SevenDay != nil {
-		fmt.Fprintf(w, " | 7d: %s", formatRateWindow(rl.SevenDay, now))
+	drop := 2
+	if 100-rw.UsedPercentage <= lowRateLimit {
+		drop = 1
 	}
-	if rl.SpendLimit != nil {
-		fmt.Fprintf(w, " | spend: %s", formatRateWindow(rl.SpendLimit, now))
+	return []segment{
+		{sep: wideSep, text: label + ": " + rateRemaining(rw), drop: drop},
+		{text: rateReset(rw, now), drop: 5, attached: true},
 	}
-}
-
-// formatRateWindow shows the remaining percentage and the time to reset.
-func formatRateWindow(rw *RateWindow, now time.Time) string {
-	return rateRemaining(rw) + rateReset(rw, now)
 }
 
 // rateRemaining is the remaining percentage of a rate window, colored by how
