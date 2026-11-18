@@ -945,7 +945,7 @@ func TestRepoIdentity(t *testing.T) {
 	})
 }
 
-func TestSessionAndVim(t *testing.T) {
+func TestSessionName(t *testing.T) {
 	t.Run("session name before dir", func(t *testing.T) {
 		in := defaultInput()
 		in.SessionName = "fix flaky tests"
@@ -989,12 +989,16 @@ func TestSessionAndVim(t *testing.T) {
 		}
 	})
 
-	t.Run("vim mode leads the line", func(t *testing.T) {
-		in := defaultInput()
-		in.Vim.Mode = "INSERT"
-		out := render(in, GitInfo{})
-		if !strings.HasPrefix(out, green+"INSERT"+reset+" | ") {
-			t.Errorf("expected INSERT first, got: %q", out)
+	t.Run("vim mode is left to Claude Code", func(t *testing.T) {
+		var in Input
+		payload := `{"model": {"display_name": "Sonnet 4"}, "vim": {"mode": "INSERT"}}`
+		if err := json.Unmarshal([]byte(payload), &in); err != nil {
+			t.Fatal(err)
+		}
+		for _, cols := range []int{0, 50, 120} {
+			if out := renderCols(in, GitInfo{}, cols); strings.Contains(out, "INSERT") {
+				t.Errorf("cols=%d: expected no vim mode, got: %q", cols, out)
+			}
 		}
 	})
 }
@@ -1080,7 +1084,7 @@ func TestLinesFitAnyWidth(t *testing.T) {
 		for _, dir := range dirs {
 			for _, wt := range worktrees {
 				in := defaultInput()
-				in.Vim.Mode = "INSERT"
+				in.Effort.Level = "medium"
 				in.SessionName = name
 				in.Workspace.CurrentDir = dir
 				in.Workspace.GitWorktree = wt
@@ -1328,7 +1332,6 @@ func TestInputSanitize(t *testing.T) {
 		"output_style": {"name": "con\u001bcise"},
 		"agent": {"name": "re\nviewer"},
 		"effort": {"level": "hi\u0000gh"},
-		"vim": {"mode": "NOR\u001bMAL"},
 		"prompt_cache": {"last_miss_cause": {"causes": ["tools\u001b_changed"]}}
 	}`
 	var in Input
@@ -1340,13 +1343,13 @@ func TestInputSanitize(t *testing.T) {
 	got := []string{
 		in.Model.DisplayName, in.SessionName, in.Workspace.CurrentDir, in.Workspace.GitWorktree,
 		in.Workspace.Repo.Host, in.Workspace.Repo.Owner, in.Workspace.Repo.Name,
-		in.OutputStyle.Name, in.Agent.Name, in.Effort.Level, in.Vim.Mode,
+		in.OutputStyle.Name, in.Agent.Name, in.Effort.Level,
 		in.PromptCache.LastMissCause.Causes[0],
 	}
 	want := []string{
 		"Claude[31m Opus", "]0;titlename next", "/home/user/a b", "wt2J",
 		"github.com", "o wner", "name",
-		"concise", "re viewer", "high", "NORMAL",
+		"concise", "re viewer", "high",
 		"tools_changed",
 	}
 	for i := range want {
