@@ -279,6 +279,8 @@ func TestFitLine(t *testing.T) {
 		{"others go before the elastic falls under its minimum", []segment{elastic("abcdefghij"), {sep: " ", text: "gone", drop: 1}}, 7, "abcdef…"},
 		{"elastic gives up without room", []segment{{text: "keepkeep"}, elastic("abcdefghij")}, 10, "keepkeep"},
 		{"what always stays can overflow", []segment{{text: "keepkeep"}, {sep: " ", text: "x", drop: 1}}, 4, "keepkeep"},
+		{"an attached segment goes with its owner", []segment{{text: "keep"}, {sep: " ", text: "owner", drop: 1}, {text: "+a", drop: 3, attached: true}, {text: "+b", drop: 2, attached: true}}, 7, "keep"},
+		{"an attached segment can outlast one before it", []segment{{text: "owner", drop: 1}, {text: "+aaa", drop: 3, attached: true}, {text: "+b", drop: 2, attached: true}}, 8, "owner+b"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

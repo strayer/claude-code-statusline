@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 )
@@ -16,102 +15,6 @@ const narrowBelow = 60
 // narrowSep separates the groups of a narrow line. Within a group, such as
 // the model with its effort, a space is enough.
 const narrowSep = " " + dim + "|" + reset + " "
-
-// segment is one piece of a fitted line.
-type segment struct {
-	// sep is printed before the segment unless it starts the line.
-	sep  string
-	text string
-	// drop is 0 for a segment that always stays. Among the others the
-	// highest goes first when the line is too long, and of two
-	// with the same value the later one.
-	drop int
-	// fit makes the segment elastic: it renders into the given width and
-	// returns "" when it can't. A line has at most one elastic segment.
-	fit func(width int) string
-	// min is the width an elastic segment keeps while there are other
-	// segments left to drop.
-	min int
-}
-
-// fitLine joins segs into a line of at most limit columns. It drops segments
-// by priority until the rest fits, takes back those dropped ones that fit
-// after all, most important first, and gives the elastic segment the columns
-// that are left. A line of segments that all stay can still exceed limit.
-func fitLine(segs []segment, limit int) string {
-	segs = slices.DeleteFunc(slices.Clone(segs), func(s segment) bool {
-		return s.text == "" && s.fit == nil
-	})
-	shown := make([]bool, len(segs))
-	for i := range shown {
-		shown[i] = true
-	}
-
-	// measure returns the width of the shown fixed segments and their
-	// separators, and whether the line fits.
-	measure := func() (fixed int, fits bool) {
-		first, need := true, 0
-		for i, s := range segs {
-			if !shown[i] {
-				continue
-			}
-			if !first {
-				fixed += visibleWidth(s.sep)
-			}
-			first = false
-			if s.fit != nil {
-				need = s.min
-			} else {
-				fixed += visibleWidth(s.text)
-			}
-		}
-		return fixed, limit-fixed >= need
-	}
-
-	var dropped []int
-	for {
-		if _, fits := measure(); fits {
-			break
-		}
-		victim := -1
-		for i, s := range segs {
-			if shown[i] && s.drop > 0 && (victim < 0 || s.drop >= segs[victim].drop) {
-				victim = i
-			}
-		}
-		if victim < 0 {
-			break
-		}
-		shown[victim] = false
-		dropped = append(dropped, victim)
-	}
-	for _, i := range slices.Backward(dropped) {
-		shown[i] = true
-		if _, fits := measure(); !fits {
-			shown[i] = false
-		}
-	}
-
-	fixed, _ := measure()
-	var line strings.Builder
-	for i, s := range segs {
-		if !shown[i] {
-			continue
-		}
-		text := s.text
-		if s.fit != nil {
-			text = s.fit(limit - fixed)
-		}
-		if text == "" {
-			continue
-		}
-		if line.Len() > 0 {
-			line.WriteString(s.sep)
-		}
-		line.WriteString(text)
-	}
-	return line.String()
-}
 
 // renderNarrow prints the layout for phone-width terminals: where the session
 // is, then the model and the gauges. Everything is quiet while it is fine and
@@ -130,7 +33,7 @@ func renderNarrow(w io.Writer, input Input, git GitInfo, now time.Time, sandbox 
 		repoName = git.RepoName
 	}
 	if repoName != "" || git.Branch != "" {
-		segs = append(segs, repoBranchSegment(repoName, input.Workspace.Repo.webURL(), git.Branch))
+		segs = append(segs, repoBranchSegment(narrowSep, repoName, input.Workspace.Repo.webURL(), git.Branch, minBranchLen))
 		status := ""
 		if git.Dirty {
 			status += "*"
@@ -192,10 +95,15 @@ func renderNarrow(w io.Writer, input Input, git GitInfo, now time.Time, sandbox 
 	fmt.Fprintln(w, fitLine(segs, limit))
 }
 
+// minBranchLen is the narrowest a branch is shown next to the repository
+// name.
+const minBranchLen = 6
+
 // repoBranchSegment is the elastic repo:branch. The branch shrinks first, and
 // the repository name goes when even a short branch doesn't fit next to it.
-func repoBranchSegment(repo, repoURL, branch string) segment {
-	const minBranchLen = 6
+// The branch keeps keepBranch columns while other segments can be dropped
+// instead.
+func repoBranchSegment(sep, repo, repoURL, branch string, keepBranch int) segment {
 	color := func(name, c string) string { return c + name + reset }
 	link := func(name string) string { return green + hyperlink(repoURL, name) + reset }
 
@@ -205,7 +113,7 @@ func repoBranchSegment(repo, repoURL, branch string) segment {
 			name, render = branch, func(s string) string { return color(s, blue) }
 		}
 		need := min(minTruncated, visibleWidth(name))
-		return segment{sep: narrowSep, min: need, fit: func(width int) string {
+		return segment{sep: sep, min: min(max(keepBranch, need), visibleWidth(name)), fit: func(width int) string {
 			if width < need {
 				return ""
 			}
@@ -215,7 +123,7 @@ func repoBranchSegment(repo, repoURL, branch string) segment {
 
 	repoWidth := visibleWidth(repo) + 1
 	shortBranch := min(minBranchLen, visibleWidth(branch))
-	return segment{sep: narrowSep, min: repoWidth + shortBranch, fit: func(width int) string {
+	return segment{sep: sep, min: repoWidth + min(max(keepBranch, shortBranch), visibleWidth(branch)), fit: func(width int) string {
 		switch {
 		case width-repoWidth >= shortBranch:
 			return link(repo) + ":" + color(truncateWidth(branch, width-repoWidth), blue)
@@ -315,5 +223,5 @@ func narrowRateWindow(label string, rw *RateWindow, now time.Time, drop int) []s
 	if remaining <= 10 {
 		window.drop = 1
 	}
-	return []segment{window, {text: rateReset(rw, now), drop: 11}}
+	return []segment{window, {text: rateReset(rw, now), drop: 11, attached: true}}
 }
