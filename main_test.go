@@ -2,7 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -313,18 +317,6 @@ func TestRenderOutput(t *testing.T) {
 		}
 	})
 
-	t.Run("worktree indicator", func(t *testing.T) {
-		out := render(defaultInput(), GitInfo{
-			RepoName:   "myrepo",
-			Branch:     "main",
-			IsWorktree: true,
-		})
-
-		if !strings.Contains(out, "wt") {
-			t.Errorf("expected wt indicator in output, got: %q", out)
-		}
-	})
-
 	t.Run("effort level in model chip", func(t *testing.T) {
 		in := defaultInput()
 		in.Effort = EffortInfo{Level: "high"}
@@ -531,34 +523,6 @@ func TestRenderWorktree(t *testing.T) {
 		}
 	})
 
-	t.Run("session data preferred over git detection", func(t *testing.T) {
-		in := defaultInput()
-		in.Workspace.GitWorktree = "feature-xyz"
-		git := gitRepo
-		git.IsWorktree = true
-		out := render(in, git)
-
-		if !strings.Contains(out, "wt:feature-xyz") {
-			t.Errorf("expected named worktree indicator, got: %q", out)
-		}
-		if strings.Contains(out, "| "+yellow+"wt"+reset) {
-			t.Errorf("expected no bare wt indicator alongside the name, got: %q", out)
-		}
-	})
-
-	t.Run("falls back to git detection without session data", func(t *testing.T) {
-		git := gitRepo
-		git.IsWorktree = true
-		out := render(defaultInput(), git)
-
-		if !strings.Contains(out, "wt") {
-			t.Errorf("expected bare wt indicator, got: %q", out)
-		}
-		if strings.Contains(out, "wt:") {
-			t.Errorf("expected no worktree name, got: %q", out)
-		}
-	})
-
 	t.Run("no indicator in main working tree", func(t *testing.T) {
 		out := render(defaultInput(), gitRepo)
 
@@ -762,30 +726,6 @@ func TestDetectSandbox(t *testing.T) {
 			got := detectSandbox()
 			if got != tt.want {
 				t.Errorf("detectSandbox() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestTruncateCommitMessage(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"short message unchanged", "hello", "hello"},
-		{"exact 70 runes unchanged", strings.Repeat("a", 70), strings.Repeat("a", 70)},
-		{"long ascii truncated to 70 with ellipsis", strings.Repeat("a", 75), strings.Repeat("a", 70) + "…"},
-		{"emoji preserved at boundary", strings.Repeat("a", 69) + "🎉", strings.Repeat("a", 69) + "🎉"},
-		{"emoji not split", strings.Repeat("a", 70) + "🎉", strings.Repeat("a", 70) + "…"},
-		{"multi-byte truncation preserves valid utf8", strings.Repeat("a", 68) + "🎉🎉🎉", strings.Repeat("a", 68) + "🎉🎉" + "…"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := truncateCommitMessage(tt.input)
-			if got != tt.want {
-				t.Errorf("truncateCommitMessage(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -1171,5 +1111,200 @@ func TestWideCharactersFit(t *testing.T) {
 
 	if got := shortenPath("/opt/日本語/日本語/日本語", "", 10); visibleWidth(got) > 10 {
 		t.Errorf("shortenPath width %d exceeds 10: %q", visibleWidth(got), got)
+	}
+}
+
+func TestRepoNameFromDir(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "my-experiment")
+	nested := filepath.Join(repo, "a", "b")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(nested, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("repository root", func(t *testing.T) {
+		if got := repoNameFromDir(repo); got != "my-experiment" {
+			t.Errorf("got %q, want my-experiment", got)
+		}
+	})
+
+	t.Run("nested directory", func(t *testing.T) {
+		if got := repoNameFromDir(nested); got != "my-experiment" {
+			t.Errorf("got %q, want my-experiment", got)
+		}
+	})
+
+	t.Run("linked worktree has a .git file", func(t *testing.T) {
+		wt := filepath.Join(root, "feature-wt")
+		if err := os.MkdirAll(wt, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: /elsewhere\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := repoNameFromDir(wt); got != "feature-wt" {
+			t.Errorf("got %q, want feature-wt", got)
+		}
+	})
+
+	t.Run("symlinked directory resolves to the repository", func(t *testing.T) {
+		link := filepath.Join(root, "link")
+		if err := os.Symlink(repo, link); err != nil {
+			t.Skip("symlinks unavailable:", err)
+		}
+		if got := repoNameFromDir(link); got != "my-experiment" {
+			t.Errorf("got %q, want my-experiment", got)
+		}
+	})
+}
+
+// fakeGit puts a script named git first on PATH.
+func fakeGit(t *testing.T, script string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX shell")
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\n"+script+"\n"), 0o700); err != nil { // #nosec G306 -- must be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestGitCmdDescendantHoldsStdout(t *testing.T) {
+	t.Run("output of an exited git is kept", func(t *testing.T) {
+		fakeGit(t, "echo output\nsleep 5 &")
+		start := time.Now()
+		out, err := gitCmd(context.Background(), t.TempDir(), "status")
+		if err != nil || out != "output\n" {
+			t.Errorf("got %q, %v, want the output and no error", out, err)
+		}
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Errorf("waited %v for a descendant holding stdout", elapsed)
+		}
+	})
+
+	t.Run("deadline is enforced", func(t *testing.T) {
+		fakeGit(t, "sleep 5 &\nsleep 5")
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		if _, err := gitCmd(ctx, t.TempDir(), "status"); err == nil {
+			t.Error("expected an error after the deadline")
+		}
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Errorf("deadline exceeded by far: %v", elapsed)
+		}
+	})
+}
+
+func TestCollectGitInfoSubject(t *testing.T) {
+	fakeGit(t, `case "$2" in
+status) printf '# branch.oid abc1234def\n# branch.head main\n' ;;
+log) printf '%s\n' "$SUBJECT" ;;
+esac`)
+
+	t.Run("subject is read alongside the status", func(t *testing.T) {
+		t.Setenv("SUBJECT", "Add the thing")
+		want := GitInfo{Branch: "main", ShortHash: "abc1234", CommitMessage: "Add the thing"}
+		if got := collectGitInfo(t.TempDir(), false); got != want {
+			t.Errorf("got %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("subject is cut by width", func(t *testing.T) {
+		t.Setenv("SUBJECT", strings.Repeat("日", 40))
+		got := collectGitInfo(t.TempDir(), false).CommitMessage
+		if want := strings.Repeat("日", 34) + "…"; got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+}
+
+func TestSanitize(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain text unchanged", "Fix the thing — 日本語 🎉", "Fix the thing — 日本語 🎉"},
+		{"ESC of a color sequence removed", "\x1b[31mred\x1b[0m", "[31mred[0m"},
+		{"OSC link loses ESC and BEL", "\x1b]8;;https://example.com\aname\x1b]8;;\a", "]8;;https://example.comname]8;;"},
+		{"newline becomes a space", "one\ntwo", "one two"},
+		{"carriage return becomes a space", "one\r\ntwo", "one  two"},
+		{"tab becomes a space", "one\ttwo", "one two"},
+		{"NUL removed", "a\x00b", "ab"},
+		{"DEL removed", "a\x7fb", "ab"},
+		{"C1 CSI removed", "a\u009b31mb", "a31mb"},
+		{"C1 NEL removed", "a\u0085b", "ab"},
+		{"invalid UTF-8 becomes U+FFFD", "caf\xe9", "caf\ufffd"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sanitize(tt.in); got != tt.want {
+				t.Errorf("sanitize(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInputSanitize(t *testing.T) {
+	payload := `{
+		"model": {"display_name": "Claude\u001b[31m Opus"},
+		"session_name": "\u001b]0;title\u0007name\nnext",
+		"workspace": {
+			"current_dir": "/home/user/a\tb",
+			"git_worktree": "wt\u009b2J",
+			"repo": {"host": "git\u0000hub.com", "owner": "o\rwner", "name": "na\u007fme"}
+		},
+		"output_style": {"name": "con\u001bcise"},
+		"agent": {"name": "re\nviewer"},
+		"effort": {"level": "hi\u0000gh"},
+		"vim": {"mode": "NOR\u001bMAL"},
+		"prompt_cache": {"last_miss_cause": {"causes": ["tools\u001b_changed"]}}
+	}`
+	var in Input
+	if err := json.Unmarshal([]byte(payload), &in); err != nil {
+		t.Fatal(err)
+	}
+	in.sanitize()
+
+	got := []string{
+		in.Model.DisplayName, in.SessionName, in.Workspace.CurrentDir, in.Workspace.GitWorktree,
+		in.Workspace.Repo.Host, in.Workspace.Repo.Owner, in.Workspace.Repo.Name,
+		in.OutputStyle.Name, in.Agent.Name, in.Effort.Level, in.Vim.Mode,
+		in.PromptCache.LastMissCause.Causes[0],
+	}
+	want := []string{
+		"Claude[31m Opus", "]0;titlename next", "/home/user/a b", "wt2J",
+		"github.com", "o wner", "name",
+		"concise", "re viewer", "high", "NORMAL",
+		"tools_changed",
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("field %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestCollectGitInfoSanitizes(t *testing.T) {
+	fakeGit(t, `case "$2" in
+status) printf '# branch.oid abc1234def\n# branch.head ma\033[31min\n' ;;
+log) printf '\033[31mred\033[0m\tsubject\000 with \302\233controls\n' ;;
+esac`)
+	want := GitInfo{Branch: "ma[31min", ShortHash: "abc1234", CommitMessage: "[31mred[0m subject with controls"}
+	if got := collectGitInfo(t.TempDir(), false); got != want {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestDetectSandboxSanitizes(t *testing.T) {
+	t.Setenv("SANDBOX_VM_ID", "vm\x1b[31m\n1")
+	if got, want := detectSandbox(), "sbx[vm[31m 1]"; got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

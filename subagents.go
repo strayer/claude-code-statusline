@@ -55,6 +55,18 @@ func (e *EffortValue) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// sanitize cleans the strings of each task that are displayed. The id stays
+// as sent, since Claude Code matches rows by it.
+func (in *SubagentInput) sanitize() {
+	for i := range in.Tasks {
+		t := &in.Tasks[i]
+		for _, f := range []*string{&t.Name, &t.AgentType, &t.Description, &t.Label, &t.Model} {
+			*f = sanitize(*f)
+		}
+		t.Effort = EffortValue(sanitize(string(t.Effort)))
+	}
+}
+
 // subagentRow is one line of the command's output: the row to replace and
 // its new body.
 type subagentRow struct {

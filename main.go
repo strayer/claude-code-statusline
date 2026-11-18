@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,7 +13,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -141,7 +141,7 @@ type PRInfo struct {
 	URL         string `json:"url"`
 }
 
-// Git info collected from parallel commands
+// Git info that Claude Code doesn't report
 
 type GitInfo struct {
 	RepoName      string
@@ -150,7 +150,6 @@ type GitInfo struct {
 	Ahead         string
 	Behind        string
 	Dirty         bool
-	IsWorktree    bool
 	CommitMessage string
 }
 
@@ -181,6 +180,7 @@ func main() {
 		if err := json.Unmarshal(data, &input); err != nil {
 			return
 		}
+		input.sanitize()
 		renderSubagents(os.Stdout, input, time.Now())
 		return
 	}
@@ -190,19 +190,65 @@ func main() {
 		return
 	}
 
+	// git needs the directory as reported; everything else is only displayed.
+	dir := input.Workspace.CurrentDir
+	input.sanitize()
+
 	homeDir, _ := os.UserHomeDir()
-	gitInfo := collectGitInfo(input.Workspace.CurrentDir)
+	homeDir = sanitize(homeDir)
+	gitInfo := collectGitInfo(dir, input.Workspace.Repo.Name == "")
 	// Claude Code captures stdout, so the terminal width only reaches us via
 	// COLUMNS. Zero means unknown and falls back to fixed limits.
 	cols, _ := strconv.Atoi(os.Getenv("COLUMNS"))
 	renderOutput(os.Stdout, input, gitInfo, time.Now(), homeDir, detectSandbox(), cols)
 }
 
+// sanitize makes text from outside the program safe to print: control
+// characters (Unicode category Cc, which covers ESC and the C1 controls) never
+// reach the terminal. Tab, line feed and carriage return become a space, the
+// others are dropped. Invalid UTF-8 comes out as U+FFFD.
+func sanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t', r == '\n', r == '\r':
+			return ' '
+		case unicode.IsControl(r):
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// sanitize cleans every string of the payload that is displayed.
+func (in *Input) sanitize() {
+	fields := []*string{
+		&in.Model.DisplayName,
+		&in.Workspace.CurrentDir,
+		&in.Workspace.GitWorktree,
+		&in.Workspace.Repo.Host,
+		&in.Workspace.Repo.Owner,
+		&in.Workspace.Repo.Name,
+		&in.OutputStyle.Name,
+		&in.Agent.Name,
+		&in.Effort.Level,
+		&in.Vim.Mode,
+		&in.SessionName,
+	}
+	if pc := in.PromptCache; pc != nil && pc.LastMissCause != nil {
+		for i := range pc.LastMissCause.Causes {
+			fields = append(fields, &pc.LastMissCause.Causes[i])
+		}
+	}
+	for _, f := range fields {
+		*f = sanitize(*f)
+	}
+}
+
 // detectSandbox returns a label when running inside an agent sandbox
 // (e.g. Docker AI Agent Sandboxes), detected via inherited env vars.
 func detectSandbox() string {
 	if id := os.Getenv("SANDBOX_VM_ID"); id != "" {
-		return "sbx[" + id + "]"
+		return "sbx[" + sanitize(id) + "]"
 	}
 	if os.Getenv("IS_SANDBOX") != "" {
 		return "sbx"
@@ -210,74 +256,72 @@ func detectSandbox() string {
 	return ""
 }
 
-func collectGitInfo(dir string) GitInfo {
+// maxSubjectWidth caps the commit subject, in terminal columns.
+const maxSubjectWidth = 70
+
+// collectGitInfo gathers what Claude Code doesn't report about the repository.
+// Every render pays for it, so the two git processes it needs run concurrently
+// under one deadline and the repository name is read from the directory
+// layout. needRepoName is false when Claude Code reported the name.
+func collectGitInfo(dir string, needRepoName bool) GitInfo {
 	if dir == "" {
 		return GitInfo{}
 	}
 
-	var info GitInfo
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 	defer cancel()
 
-	// Command 1: git status --porcelain=v2 --branch
-	wg.Add(1)
+	// On a branch without commits git log fails and there is no subject.
+	subject := make(chan string, 1)
 	go func() {
-		defer wg.Done()
-		out, err := gitCmd(ctx, dir, "status", "--porcelain=v2", "--branch")
-		if err != nil {
-			return
-		}
-		branch, hash, ahead, behind, dirty := parseGitStatus(out)
-		mu.Lock()
-		info.Branch = branch
-		info.ShortHash = hash
-		info.Ahead = ahead
-		info.Behind = behind
-		info.Dirty = dirty
-		mu.Unlock()
+		out, _ := gitCmd(ctx, dir, "log", "-1", "--format=%s")
+		subject <- truncateWidth(strings.TrimSpace(sanitize(out)), maxSubjectWidth)
 	}()
 
-	// Command 2: git rev-parse --show-toplevel --git-dir
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		out, err := gitCmd(ctx, dir, "rev-parse", "--show-toplevel", "--git-dir")
-		if err != nil {
-			return
-		}
-		lines := strings.SplitN(strings.TrimSpace(out), "\n", 2)
-		if len(lines) >= 1 {
-			mu.Lock()
-			info.RepoName = filepath.Base(lines[0])
-			mu.Unlock()
-		}
-		if len(lines) >= 2 {
-			mu.Lock()
-			info.IsWorktree = strings.Contains(lines[1], "/worktrees/")
-			mu.Unlock()
-		}
-	}()
+	var info GitInfo
+	out, err := gitCmd(ctx, dir, "status", "--porcelain=v2", "--branch")
+	if err != nil {
+		return info
+	}
+	info.Branch, info.ShortHash, info.Ahead, info.Behind, info.Dirty = parseGitStatus(out)
+	info.Branch = sanitize(info.Branch)
 
-	// Command 3: git log -1 --format=%s
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		out, err := gitCmd(ctx, dir, "log", "-1", "--format=%s")
-		if err != nil {
-			return
-		}
-		msg := truncateCommitMessage(strings.TrimSpace(out))
-		mu.Lock()
-		info.CommitMessage = msg
-		mu.Unlock()
-	}()
-
-	wg.Wait()
+	if needRepoName {
+		info.RepoName = sanitize(repoNameFromDir(dir))
+	}
+	if info.ShortHash != "" {
+		info.CommitMessage = <-subject
+	}
 	return info
 }
+
+// repoNameFromDir names the repository after the directory that holds .git,
+// searching upwards from dir. It stands in for the origin remote's name in
+// repositories that have no such remote.
+func repoNameFromDir(dir string) string {
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	for {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return filepath.Base(dir)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+const (
+	// gitTimeout bounds all git calls of a render together.
+	gitTimeout = 500 * time.Millisecond
+	// gitWaitDelay is how long a git process that has exited or been killed
+	// may keep its output pipe open through a descendant, such as a
+	// filesystem monitor it started, before the pipe is abandoned.
+	gitWaitDelay = 50 * time.Millisecond
+)
 
 func gitCmd(ctx context.Context, dir string, args ...string) (string, error) {
 	// Use --no-optional-locks to avoid creating .git/index.lock, which would
@@ -288,7 +332,10 @@ func gitCmd(ctx context.Context, dir string, args ...string) (string, error) {
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = nil
-	if err := cmd.Run(); err != nil {
+	cmd.WaitDelay = gitWaitDelay
+	// ErrWaitDelay means git itself succeeded and its output is complete; only
+	// a descendant was still holding the pipe.
+	if err := cmd.Run(); err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		return "", err
 	}
 	return out.String(), nil
@@ -323,14 +370,6 @@ func parseGitStatus(output string) (branch, shortHash, ahead, behind string, dir
 		}
 	}
 	return
-}
-
-func truncateCommitMessage(msg string) string {
-	const maxRunes = 70
-	if runes := []rune(msg); len(runes) > maxRunes {
-		return string(runes[:maxRunes]) + "…"
-	}
-	return msg
 }
 
 func isHexString(s string) bool {
@@ -625,13 +664,10 @@ func renderOutput(w io.Writer, input Input, git GitInfo, now time.Time, homeDir,
 
 		renderPR(&line, input.PR)
 
-		// Claude Code reports the worktree name for any linked worktree; the
-		// git-dir probe is the fallback for versions that omit the field.
+		// Claude Code reports the worktree name for any linked worktree.
 		suffix := ""
 		if wt := input.Workspace.GitWorktree; wt != "" {
 			suffix = " | " + yellow + "wt:" + wt + reset
-		} else if git.IsWorktree {
-			suffix = " | " + yellow + "wt" + reset
 		}
 
 		if git.ShortHash != "" {

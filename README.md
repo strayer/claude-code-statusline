@@ -18,9 +18,25 @@ A fast, dependency-free Go binary that renders a rich statusline for [Claude Cod
 The original bash implementation spawns ~10 sequential git subprocesses and ~15 jq invocations per render. This Go rewrite:
 
 - **Single JSON parse** instead of many jq calls
-- **3 parallel git calls** with 500ms timeout
+- **Two concurrent git calls** per render, sharing a 500ms timeout
 - **Locale-independent** cost formatting (no `printf "%.2f"` locale bugs)
 - **Zero dependencies** — stdlib only
+
+### Why not Zig or Rust?
+
+Both were tried. The main statusline was ported to each language (the [subagent panel](#subagent-panel) was not ported), and each port was checked against the Go binary with a differential test and then benchmarked. The ports were not kept.
+
+Mean of 1000 renders of one real payload (2026-11-17, Intel Core i7-4790, Linux):
+
+| | Go | Zig | Rust |
+|---|---|---|---|
+| Render in this repository, wall time | 3.7 ms | 2.5 ms | 2.6 ms |
+| Render in this repository, CPU time | 6.3 ms | 4.2 ms | 4.3 ms |
+| Render without git, wall time | 1.4 ms | 0.3 ms | 0.6 ms |
+| Binary size | 2.8 MiB | 0.7 MiB | 0.7 MiB |
+| Peak memory without git | 7.0 MiB | 0.6 MiB | 2.3 MiB |
+
+The ports are faster, but not in a way anyone can notice. The two git calls take about 2 ms in any language, and Claude Code runs the statusline only once every 2 to 5 seconds while it is working, and not at all while idle. The roughly 1 ms saved per render adds up to a few seconds of CPU time per hour of continuous use. Against that, Zig brings a pre-1.0 toolchain and Rust six crates to keep current, where Go needs nothing beyond its standard library. Go is good enough.
 
 ## Installation
 
@@ -175,6 +191,9 @@ On a GitLab remote the same segment describes the branch's open [merge request](
 
 When Claude spawns subagents, Claude Code lists them in a panel below the prompt as `name · description · token count`. With the `subagentStatusLine` setting above, the binary rewrites each row in the style of the metrics line, as in the screenshot at the top:
 
+> [!NOTE]
+> Claude Code has deprecated `subagentStatusLine`. Version 2.1.323 removed it, and 2.1.326 brought it back with the `/status` warning "subagentStatusLine is deprecated in favor of mods and will stop working in a future release". Once your version ignores the setting, the rows fall back to Claude Code's default look and this part of the binary goes unused.
+
 ```
 Explore [⣤⠀⠀⠀⠀⠀⠀⠀⠀⠀] 6% 12k Sonnet 5.5 Searching for config loaders 2m
 reviewer code-reviewer [⣿⣿⣀⠀⠀⠀⠀⠀⠀⠀] 24% 48k idle Opus 5.5:high Reviewing diff for bugs 5m
@@ -194,9 +213,9 @@ The command receives all visible rows as one JSON object and answers with a `{"i
 
 ### Worktrees
 
-The repo name comes from the `origin` remote as reported by Claude Code, so it stays correct inside worktrees; without a remote it falls back to the repository directory name.
+The repo name comes from the `origin` remote as reported by Claude Code, so it stays correct inside worktrees; without an `origin` remote it falls back to the name of the directory that holds `.git`.
 
-Inside a linked git worktree the line ends with `wt:<name>`, using the worktree name reported by Claude Code. Older versions that do not report it fall back to a bare `wt`, detected from the git directory.
+Inside a linked git worktree the line ends with `wt:<name>`, using the worktree name reported by Claude Code. This needs Claude Code 2.1.97 or later.
 
 ## Releasing
 
